@@ -10,16 +10,15 @@
 
 namespace VideoCommon {
 
-GPUAsynch::GPUAsynch(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer_,
-                     std::unique_ptr<Core::Frontend::GraphicsContext>&& context)
-    : GPU(system, std::move(renderer_), true), gpu_thread{system},
-      cpu_context(renderer->GetRenderWindow().CreateSharedContext()),
-      gpu_context(std::move(context)) {}
+GPUAsynch::GPUAsynch(Core::System& system, bool use_nvdec)
+    : GPU{system, true, use_nvdec}, gpu_thread{system} {}
 
 GPUAsynch::~GPUAsynch() = default;
 
 void GPUAsynch::Start() {
-    gpu_thread.StartThread(*renderer, *gpu_context, *dma_pusher);
+    gpu_thread.StartThread(*renderer, renderer->Context(), *dma_pusher, *cdma_pusher);
+    cpu_context = renderer->GetRenderWindow().CreateSharedContext();
+    cpu_context->MakeCurrent();
 }
 
 void GPUAsynch::ObtainContext() {
@@ -32,6 +31,27 @@ void GPUAsynch::ReleaseContext() {
 
 void GPUAsynch::PushGPUEntries(Tegra::CommandList&& entries) {
     gpu_thread.SubmitList(std::move(entries));
+}
+
+void GPUAsynch::PushCommandBuffer(Tegra::ChCommandHeaderList& entries) {
+    if (!use_nvdec) {
+        return;
+    }
+    // This condition fires when a video stream ends, clear all intermediary data
+    if (entries[0].raw == 0xDEADB33F) {
+        cdma_pusher.reset();
+        return;
+    }
+    if (!cdma_pusher) {
+        cdma_pusher = std::make_unique<Tegra::CDmaPusher>(*this);
+    }
+
+    // SubmitCommandBuffer would make the nvdec operations async, this is not currently working
+    // TODO(ameerj): RE proper async nvdec operation
+    // gpu_thread.SubmitCommandBuffer(std::move(entries));
+
+    cdma_pusher->Push(std::move(entries));
+    cdma_pusher->DispatchCalls();
 }
 
 void GPUAsynch::SwapBuffers(const Tegra::FramebufferConfig* framebuffer) {

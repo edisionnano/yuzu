@@ -110,6 +110,7 @@ add_library(common STATIC
     common_funcs.h
     common_paths.h
     common_types.h
+    concepts.h
     dynamic_library.cpp
     dynamic_library.h
     fiber.cpp
@@ -149,6 +150,8 @@ add_library(common STATIC
     scope_exit.h
     spin_lock.cpp
     spin_lock.h
+    stream.cpp
+    stream.h
     string_util.cpp
     string_util.h
     swap.h
@@ -171,7 +174,6 @@ add_library(common STATIC
     virtual_buffer.h
     wall_clock.cpp
     wall_clock.h
-    web_result.h
     zstd_compression.cpp
     zstd_compression.h
 )
@@ -188,8 +190,29 @@ if(ARCHITECTURE_x86_64)
     )
 endif()
 
+if (MSVC)
+  target_compile_definitions(common PRIVATE
+    # The standard library doesn't provide any replacement for codecvt yet
+    # so we can disable this deprecation warning for the time being.
+    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+  )
+  target_compile_options(common PRIVATE
+    /W4
+    /WX
+  )
+else()
+  target_compile_options(common PRIVATE
+    -Werror
+  )
+endif()
+
 create_target_directory_groups(common)
 find_package(Boost 1.71 COMPONENTS context headers REQUIRED)
 
 target_link_libraries(common PUBLIC ${Boost_LIBRARIES} fmt::fmt microprofile)
-target_link_libraries(common PRIVATE lz4::lz4 zstd::zstd xbyak)
+target_link_libraries(common PRIVATE lz4::lz4 xbyak)
+if (MSVC)
+  target_link_libraries(common PRIVATE zstd::zstd)
+else()
+  target_link_libraries(common PRIVATE zstd)
+endif()

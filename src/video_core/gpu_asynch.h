@@ -20,14 +20,14 @@ namespace VideoCommon {
 /// Implementation of GPU interface that runs the GPU asynchronously
 class GPUAsynch final : public Tegra::GPU {
 public:
-    explicit GPUAsynch(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer,
-                       std::unique_ptr<Core::Frontend::GraphicsContext>&& context);
+    explicit GPUAsynch(Core::System& system, bool use_nvdec);
     ~GPUAsynch() override;
 
     void Start() override;
     void ObtainContext() override;
     void ReleaseContext() override;
     void PushGPUEntries(Tegra::CommandList&& entries) override;
+    void PushCommandBuffer(Tegra::ChCommandHeaderList& entries) override;
     void SwapBuffers(const Tegra::FramebufferConfig* framebuffer) override;
     void FlushRegion(VAddr addr, u64 size) override;
     void InvalidateRegion(VAddr addr, u64 size) override;
@@ -42,7 +42,6 @@ protected:
 private:
     GPUThread::ThreadManager gpu_thread;
     std::unique_ptr<Core::Frontend::GraphicsContext> cpu_context;
-    std::unique_ptr<Core::Frontend::GraphicsContext> gpu_context;
 };
 
 } // namespace VideoCommon

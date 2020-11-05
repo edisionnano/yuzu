@@ -19,14 +19,14 @@ namespace VideoCommon {
 /// Implementation of GPU interface that runs the GPU synchronously
 class GPUSynch final : public Tegra::GPU {
 public:
-    explicit GPUSynch(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer,
-                      std::unique_ptr<Core::Frontend::GraphicsContext>&& context);
+    explicit GPUSynch(Core::System& system, bool use_nvdec);
     ~GPUSynch() override;
 
     void Start() override;
     void ObtainContext() override;
     void ReleaseContext() override;
     void PushGPUEntries(Tegra::CommandList&& entries) override;
+    void PushCommandBuffer(Tegra::ChCommandHeaderList& entries) override;
     void SwapBuffers(const Tegra::FramebufferConfig* framebuffer) override;
     void FlushRegion(VAddr addr, u64 size) override;
     void InvalidateRegion(VAddr addr, u64 size) override;
@@ -36,9 +36,6 @@ public:
 protected:
     void TriggerCpuInterrupt([[maybe_unused]] u32 syncpoint_id,
                              [[maybe_unused]] u32 value) const override {}
-
-private:
-    std::unique_ptr<Core::Frontend::GraphicsContext> context;
 };
 
 } // namespace VideoCommon

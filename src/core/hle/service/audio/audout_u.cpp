@@ -71,7 +71,7 @@ public:
 
         stream = audio_core.OpenStream(system.CoreTiming(), audio_params.sample_rate,
                                        audio_params.channel_count, std::move(unique_name),
-                                       [=]() { buffer_event.writable->Signal(); });
+                                       [this] { buffer_event.writable->Signal(); });
     }
 
 private:
@@ -206,7 +206,7 @@ private:
     AudioCore::StreamPtr stream;
     std::string device_name;
 
-    [[maybe_unused]] AudoutParams audio_params {};
+    [[maybe_unused]] AudoutParams audio_params{};
 
     /// This is the event handle used to check if the audio buffer was released
     Kernel::EventPair buffer_event;

@@ -37,6 +37,7 @@ public:
         VAddr addr;
         Status status;
         u32 refcount;
+        u32 dma_map_addr;
     };
 
     std::shared_ptr<Object> GetObject(u32 handle) const {
@@ -49,10 +50,10 @@ public:
 
 private:
     /// Id to use for the next handle that is created.
-    u32 next_handle = 1;
+    u32 next_handle = 0;
 
     /// Id to use for the next object that is created.
-    u32 next_id = 1;
+    u32 next_id = 0;
 
     /// Mapping of currently allocated handles to the objects they represent.
     std::unordered_map<u32, std::shared_ptr<Object>> handles;
@@ -118,6 +119,8 @@ private:
         u32_le handle;
     };
     static_assert(sizeof(IocGetIdParams) == 8, "IocGetIdParams has wrong size");
+
+    u32 CreateObject(u32 size);
 
     u32 IocCreate(const std::vector<u8>& input, std::vector<u8>& output);
     u32 IocAlloc(const std::vector<u8>& input, std::vector<u8>& output);

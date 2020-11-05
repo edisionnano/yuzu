@@ -4,16 +4,17 @@
 
 #include "common/assert.h"
 
+#include <glad/glad.h>
+
 #include "video_core/renderer_opengl/gl_buffer_cache.h"
 #include "video_core/renderer_opengl/gl_fence_manager.h"
 
 namespace OpenGL {
 
-GLInnerFence::GLInnerFence(u32 payload, bool is_stubbed)
-    : VideoCommon::FenceBase(payload, is_stubbed), sync_object{} {}
+GLInnerFence::GLInnerFence(u32 payload, bool is_stubbed) : FenceBase(payload, is_stubbed) {}
 
 GLInnerFence::GLInnerFence(GPUVAddr address, u32 payload, bool is_stubbed)
-    : VideoCommon::FenceBase(address, payload, is_stubbed), sync_object{} {}
+    : FenceBase(address, payload, is_stubbed) {}
 
 GLInnerFence::~GLInnerFence() = default;
 
@@ -44,11 +45,10 @@ void GLInnerFence::Wait() {
     glClientWaitSync(sync_object.handle, 0, GL_TIMEOUT_IGNORED);
 }
 
-FenceManagerOpenGL::FenceManagerOpenGL(Core::System& system,
-                                       VideoCore::RasterizerInterface& rasterizer,
+FenceManagerOpenGL::FenceManagerOpenGL(VideoCore::RasterizerInterface& rasterizer, Tegra::GPU& gpu,
                                        TextureCacheOpenGL& texture_cache,
                                        OGLBufferCache& buffer_cache, QueryCache& query_cache)
-    : GenericFenceManager(system, rasterizer, texture_cache, buffer_cache, query_cache) {}
+    : GenericFenceManager{rasterizer, gpu, texture_cache, buffer_cache, query_cache} {}
 
 Fence FenceManagerOpenGL::CreateFence(u32 value, bool is_stubbed) {
     return std::make_shared<GLInnerFence>(value, is_stubbed);

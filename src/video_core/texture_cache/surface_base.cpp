@@ -115,20 +115,24 @@ std::optional<std::pair<u32, u32>> SurfaceBaseImpl::GetLayerMipmap(
     if (gpu_addr == candidate_gpu_addr) {
         return {{0, 0}};
     }
+
     if (candidate_gpu_addr < gpu_addr) {
-        return {};
+        return std::nullopt;
     }
+
     const auto relative_address{static_cast<GPUVAddr>(candidate_gpu_addr - gpu_addr)};
     const auto layer{static_cast<u32>(relative_address / layer_size)};
     if (layer >= params.depth) {
-        return {};
+        return std::nullopt;
     }
+
     const GPUVAddr mipmap_address = relative_address - layer_size * layer;
     const auto mipmap_it =
         Common::BinaryFind(mipmap_offsets.begin(), mipmap_offsets.end(), mipmap_address);
     if (mipmap_it == mipmap_offsets.end()) {
-        return {};
+        return std::nullopt;
     }
+
     const auto level{static_cast<u32>(std::distance(mipmap_offsets.begin(), mipmap_it))};
     return std::make_pair(layer, level);
 }
@@ -228,7 +232,7 @@ void SurfaceBaseImpl::LoadBuffer(Tegra::MemoryManager& memory_manager,
         }
     }
 
-    if (!is_converted && params.pixel_format != PixelFormat::S8Z24) {
+    if (!is_converted && params.pixel_format != PixelFormat::S8_UINT_D24_UNORM) {
         return;
     }
 

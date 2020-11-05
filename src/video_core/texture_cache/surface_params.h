@@ -33,10 +33,11 @@ public:
                                         const VideoCommon::Shader::Image& entry);
 
     /// Creates SurfaceCachedParams for a depth buffer configuration.
-    static SurfaceParams CreateForDepthBuffer(Core::System& system);
+    static SurfaceParams CreateForDepthBuffer(Tegra::Engines::Maxwell3D& maxwell3d);
 
     /// Creates SurfaceCachedParams from a framebuffer configuration.
-    static SurfaceParams CreateForFramebuffer(Core::System& system, std::size_t index);
+    static SurfaceParams CreateForFramebuffer(Tegra::Engines::Maxwell3D& maxwell3d,
+                                              std::size_t index);
 
     /// Creates SurfaceCachedParams from a Fermi2D surface configuration.
     static SurfaceParams CreateForFermiCopySurface(
@@ -204,7 +205,7 @@ public:
     static std::size_t AlignLayered(const std::size_t out_size, const u32 block_height,
                                     const u32 block_depth) {
         return Common::AlignBits(out_size,
-                                 Tegra::Texture::GetGOBSizeShift() + block_height + block_depth);
+                                 Tegra::Texture::GOB_SIZE_SHIFT + block_height + block_depth);
     }
 
     /// Converts a width from a type of surface into another. This helps represent the

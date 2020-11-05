@@ -11,7 +11,6 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/vk_device.h"
-#include "video_core/renderer_vulkan/vk_resource_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_stream_buffer.h"
 #include "video_core/renderer_vulkan/wrapper.h"
@@ -57,9 +56,9 @@ u32 GetMemoryType(const VkPhysicalDeviceMemoryProperties& properties,
 
 } // Anonymous namespace
 
-VKStreamBuffer::VKStreamBuffer(const VKDevice& device, VKScheduler& scheduler,
+VKStreamBuffer::VKStreamBuffer(const VKDevice& device_, VKScheduler& scheduler_,
                                VkBufferUsageFlags usage)
-    : device{device}, scheduler{scheduler} {
+    : device{device_}, scheduler{scheduler_} {
     CreateBuffers(usage);
     ReserveWatches(current_watches, WATCHES_INITIAL_RESERVE);
     ReserveWatches(previous_watches, WATCHES_INITIAL_RESERVE);
@@ -111,7 +110,7 @@ void VKStreamBuffer::Unmap(u64 size) {
     }
     auto& watch = current_watches[current_watch_cursor++];
     watch.upper_bound = offset;
-    watch.fence.Watch(scheduler.GetFence());
+    watch.tick = scheduler.CurrentTick();
 }
 
 void VKStreamBuffer::CreateBuffers(VkBufferUsageFlags usage) {
@@ -121,31 +120,29 @@ void VKStreamBuffer::CreateBuffers(VkBufferUsageFlags usage) {
 
     // Substract from the preferred heap size some bytes to avoid getting out of memory.
     const VkDeviceSize heap_size = memory_properties.memoryHeaps[preferred_heap].size;
-    const VkDeviceSize allocable_size = heap_size - 9 * 1024 * 1024;
-
-    VkBufferCreateInfo buffer_ci;
-    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_ci.pNext = nullptr;
-    buffer_ci.flags = 0;
-    buffer_ci.size = std::min(PREFERRED_STREAM_BUFFER_SIZE, allocable_size);
-    buffer_ci.usage = usage;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    buffer_ci.queueFamilyIndexCount = 0;
-    buffer_ci.pQueueFamilyIndices = nullptr;
-
-    buffer = device.GetLogical().CreateBuffer(buffer_ci);
+    // As per DXVK's example, using `heap_size / 2`
+    const VkDeviceSize allocable_size = heap_size / 2;
+    buffer = device.GetLogical().CreateBuffer({
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = std::min(PREFERRED_STREAM_BUFFER_SIZE, allocable_size),
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    });
 
     const auto requirements = device.GetLogical().GetBufferMemoryRequirements(*buffer);
     const u32 required_flags = requirements.memoryTypeBits;
     stream_buffer_size = static_cast<u64>(requirements.size);
 
-    VkMemoryAllocateInfo memory_ai;
-    memory_ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    memory_ai.pNext = nullptr;
-    memory_ai.allocationSize = requirements.size;
-    memory_ai.memoryTypeIndex = GetMemoryType(memory_properties, required_flags);
-
-    memory = device.GetLogical().AllocateMemory(memory_ai);
+    memory = device.GetLogical().AllocateMemory({
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = GetMemoryType(memory_properties, required_flags),
+    });
     buffer.BindMemory(*memory, 0);
 }
 
@@ -160,7 +157,7 @@ void VKStreamBuffer::WaitPendingOperations(u64 requested_upper_bound) {
     while (requested_upper_bound < wait_bound && wait_cursor < *invalidation_mark) {
         auto& watch = previous_watches[wait_cursor];
         wait_bound = watch.upper_bound;
-        watch.fence.Wait();
+        scheduler.Wait(watch.tick);
         ++wait_cursor;
     }
 }

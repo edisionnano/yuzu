@@ -31,11 +31,11 @@ ComponentType GetComponentType(Tegra::Engines::SamplerDescriptor descriptor,
                                std::size_t component) {
     const TextureFormat format{descriptor.format};
     switch (format) {
-    case TextureFormat::R16_G16_B16_A16:
-    case TextureFormat::R32_G32_B32_A32:
-    case TextureFormat::R32_G32_B32:
-    case TextureFormat::R32_G32:
-    case TextureFormat::R16_G16:
+    case TextureFormat::R16G16B16A16:
+    case TextureFormat::R32G32B32A32:
+    case TextureFormat::R32G32B32:
+    case TextureFormat::R32G32:
+    case TextureFormat::R16G16:
     case TextureFormat::R32:
     case TextureFormat::R16:
     case TextureFormat::R8:
@@ -97,7 +97,7 @@ ComponentType GetComponentType(Tegra::Engines::SamplerDescriptor descriptor,
         break;
     case TextureFormat::B5G6R5:
     case TextureFormat::B6G5R5:
-    case TextureFormat::BF10GF11RF11:
+    case TextureFormat::B10G11R11:
         if (component == 0) {
             return descriptor.b_type;
         }
@@ -108,9 +108,9 @@ ComponentType GetComponentType(Tegra::Engines::SamplerDescriptor descriptor,
             return descriptor.r_type;
         }
         break;
-    case TextureFormat::G8R24:
-    case TextureFormat::G24R8:
-    case TextureFormat::G8R8:
+    case TextureFormat::R24G8:
+    case TextureFormat::R8G24:
+    case TextureFormat::R8G8:
     case TextureFormat::G4R4:
         if (component == 0) {
             return descriptor.g_type;
@@ -118,6 +118,8 @@ ComponentType GetComponentType(Tegra::Engines::SamplerDescriptor descriptor,
         if (component == 1) {
             return descriptor.r_type;
         }
+        break;
+    default:
         break;
     }
     UNIMPLEMENTED_MSG("Texture format not implemented={}", format);
@@ -137,15 +139,15 @@ bool IsComponentEnabled(std::size_t component_mask, std::size_t component) {
 
 u32 GetComponentSize(TextureFormat format, std::size_t component) {
     switch (format) {
-    case TextureFormat::R32_G32_B32_A32:
+    case TextureFormat::R32G32B32A32:
         return 32;
-    case TextureFormat::R16_G16_B16_A16:
+    case TextureFormat::R16G16B16A16:
         return 16;
-    case TextureFormat::R32_G32_B32:
+    case TextureFormat::R32G32B32:
         return component <= 2 ? 32 : 0;
-    case TextureFormat::R32_G32:
+    case TextureFormat::R32G32:
         return component <= 1 ? 32 : 0;
-    case TextureFormat::R16_G16:
+    case TextureFormat::R16G16:
         return component <= 1 ? 16 : 0;
     case TextureFormat::R32:
         return component == 0 ? 32 : 0;
@@ -192,7 +194,7 @@ u32 GetComponentSize(TextureFormat format, std::size_t component) {
             return 6;
         }
         return 0;
-    case TextureFormat::BF10GF11RF11:
+    case TextureFormat::B10G11R11:
         if (component == 1 || component == 2) {
             return 11;
         }
@@ -200,7 +202,7 @@ u32 GetComponentSize(TextureFormat format, std::size_t component) {
             return 10;
         }
         return 0;
-    case TextureFormat::G8R24:
+    case TextureFormat::R24G8:
         if (component == 0) {
             return 8;
         }
@@ -208,7 +210,7 @@ u32 GetComponentSize(TextureFormat format, std::size_t component) {
             return 24;
         }
         return 0;
-    case TextureFormat::G24R8:
+    case TextureFormat::R8G24:
         if (component == 0) {
             return 8;
         }
@@ -216,13 +218,14 @@ u32 GetComponentSize(TextureFormat format, std::size_t component) {
             return 24;
         }
         return 0;
-    case TextureFormat::G8R8:
+    case TextureFormat::R8G8:
         return (component == 0 || component == 1) ? 8 : 0;
     case TextureFormat::G4R4:
         return (component == 0 || component == 1) ? 4 : 0;
+    default:
+        UNIMPLEMENTED_MSG("Texture format not implemented={}", format);
+        return 0;
     }
-    UNIMPLEMENTED_MSG("Texture format not implemented={}", format);
-    return 0;
 }
 
 std::size_t GetImageComponentMask(TextureFormat format) {
@@ -231,25 +234,25 @@ std::size_t GetImageComponentMask(TextureFormat format) {
     constexpr u8 B = 0b0100;
     constexpr u8 A = 0b1000;
     switch (format) {
-    case TextureFormat::R32_G32_B32_A32:
-    case TextureFormat::R16_G16_B16_A16:
+    case TextureFormat::R32G32B32A32:
+    case TextureFormat::R16G16B16A16:
     case TextureFormat::A8R8G8B8:
     case TextureFormat::A2B10G10R10:
     case TextureFormat::A4B4G4R4:
     case TextureFormat::A5B5G5R1:
     case TextureFormat::A1B5G5R5:
         return std::size_t{R | G | B | A};
-    case TextureFormat::R32_G32_B32:
+    case TextureFormat::R32G32B32:
     case TextureFormat::R32_B24G8:
     case TextureFormat::B5G6R5:
     case TextureFormat::B6G5R5:
-    case TextureFormat::BF10GF11RF11:
+    case TextureFormat::B10G11R11:
         return std::size_t{R | G | B};
-    case TextureFormat::R32_G32:
-    case TextureFormat::R16_G16:
-    case TextureFormat::G8R24:
-    case TextureFormat::G24R8:
-    case TextureFormat::G8R8:
+    case TextureFormat::R32G32:
+    case TextureFormat::R16G16:
+    case TextureFormat::R24G8:
+    case TextureFormat::R8G24:
+    case TextureFormat::R8G8:
     case TextureFormat::G4R4:
         return std::size_t{R | G};
     case TextureFormat::R32:
@@ -257,9 +260,10 @@ std::size_t GetImageComponentMask(TextureFormat format) {
     case TextureFormat::R8:
     case TextureFormat::R1:
         return std::size_t{R};
+    default:
+        UNIMPLEMENTED_MSG("Texture format not implemented={}", format);
+        return std::size_t{R | G | B | A};
     }
-    UNIMPLEMENTED_MSG("Texture format not implemented={}", format);
-    return std::size_t{R | G | B | A};
 }
 
 std::size_t GetImageTypeNumCoordinates(Tegra::Shader::ImageType image_type) {
@@ -463,7 +467,10 @@ u32 ShaderIR::DecodeImage(NodeBlock& bb, u32 pc) {
                     return OperationCode::AtomicImageXor;
                 case Tegra::Shader::ImageAtomicOperation::Exch:
                     return OperationCode::AtomicImageExchange;
+                default:
+                    break;
                 }
+                break;
             default:
                 break;
             }

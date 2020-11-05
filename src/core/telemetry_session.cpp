@@ -25,6 +25,8 @@
 
 namespace Core {
 
+namespace Telemetry = Common::Telemetry;
+
 static u64 GenerateTelemetryId() {
     u64 telemetry_id{};
 
@@ -70,12 +72,12 @@ static const char* TranslateGPUAccuracyLevel(Settings::GPUAccuracy backend) {
 
 u64 GetTelemetryId() {
     u64 telemetry_id{};
-    const std::string filename{FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) +
+    const std::string filename{Common::FS::GetUserPath(Common::FS::UserPath::ConfigDir) +
                                "telemetry_id"};
 
-    bool generate_new_id = !FileUtil::Exists(filename);
+    bool generate_new_id = !Common::FS::Exists(filename);
     if (!generate_new_id) {
-        FileUtil::IOFile file(filename, "rb");
+        Common::FS::IOFile file(filename, "rb");
         if (!file.IsOpen()) {
             LOG_ERROR(Core, "failed to open telemetry_id: {}", filename);
             return {};
@@ -88,7 +90,7 @@ u64 GetTelemetryId() {
     }
 
     if (generate_new_id) {
-        FileUtil::IOFile file(filename, "wb");
+        Common::FS::IOFile file(filename, "wb");
         if (!file.IsOpen()) {
             LOG_ERROR(Core, "failed to open telemetry_id: {}", filename);
             return {};
@@ -102,10 +104,10 @@ u64 GetTelemetryId() {
 
 u64 RegenerateTelemetryId() {
     const u64 new_telemetry_id{GenerateTelemetryId()};
-    const std::string filename{FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) +
+    const std::string filename{Common::FS::GetUserPath(Common::FS::UserPath::ConfigDir) +
                                "telemetry_id"};
 
-    FileUtil::IOFile file(filename, "wb");
+    Common::FS::IOFile file(filename, "wb");
     if (!file.IsOpen()) {
         LOG_ERROR(Core, "failed to open telemetry_id: {}", filename);
         return {};
@@ -204,9 +206,13 @@ void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader) {
              TranslateGPUAccuracyLevel(Settings::values.gpu_accuracy.GetValue()));
     AddField(field_type, "Renderer_UseAsynchronousGpuEmulation",
              Settings::values.use_asynchronous_gpu_emulation.GetValue());
+    AddField(field_type, "Renderer_UseNvdecEmulation",
+             Settings::values.use_nvdec_emulation.GetValue());
     AddField(field_type, "Renderer_UseVsync", Settings::values.use_vsync.GetValue());
     AddField(field_type, "Renderer_UseAssemblyShaders",
              Settings::values.use_assembly_shaders.GetValue());
+    AddField(field_type, "Renderer_UseAsynchronousShaders",
+             Settings::values.use_asynchronous_shaders.GetValue());
     AddField(field_type, "System_UseDockedMode", Settings::values.use_docked_mode);
 }
 

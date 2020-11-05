@@ -12,17 +12,21 @@
 #include "yuzu/configuration/configure_input_player.h"
 #include "yuzu/hotkeys.h"
 
-ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry)
+ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry,
+                                 InputCommon::InputSubsystem* input_subsystem)
     : QDialog(parent), ui(new Ui::ConfigureDialog), registry(registry) {
-    Settings::configuring_global = true;
+    Settings::SetConfiguringGlobal(true);
 
     ui->setupUi(this);
     ui->hotkeysTab->Populate(registry);
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
+    ui->inputTab->Initialize(input_subsystem);
+
     SetConfiguration();
     PopulateSelectionList();
 
+    connect(ui->uiTab, &ConfigureUi::LanguageChanged, this, &ConfigureDialog::OnLanguageChanged);
     connect(ui->selectorList, &QListWidget::itemSelectionChanged, this,
             &ConfigureDialog::UpdateVisibleTabs);
 
@@ -42,6 +46,8 @@ void ConfigureDialog::ApplyConfiguration() {
     ui->filesystemTab->applyConfiguration();
     ui->inputTab->ApplyConfiguration();
     ui->hotkeysTab->ApplyConfiguration(registry);
+    ui->cpuTab->ApplyConfiguration();
+    ui->cpuDebugTab->ApplyConfiguration();
     ui->graphicsTab->ApplyConfiguration();
     ui->graphicsAdvancedTab->ApplyConfiguration();
     ui->audioTab->ApplyConfiguration();
@@ -76,12 +82,13 @@ void ConfigureDialog::RetranslateUI() {
 Q_DECLARE_METATYPE(QList<QWidget*>);
 
 void ConfigureDialog::PopulateSelectionList() {
-    const std::array<std::pair<QString, QList<QWidget*>>, 5> items{
-        {{tr("General"), {ui->generalTab, ui->webTab, ui->debugTab, ui->uiTab}},
+    const std::array<std::pair<QString, QList<QWidget*>>, 6> items{
+        {{tr("General"), {ui->generalTab, ui->hotkeysTab, ui->uiTab, ui->webTab, ui->debugTab}},
          {tr("System"), {ui->systemTab, ui->profileManagerTab, ui->serviceTab, ui->filesystemTab}},
+         {tr("CPU"), {ui->cpuTab, ui->cpuDebugTab}},
          {tr("Graphics"), {ui->graphicsTab, ui->graphicsAdvancedTab}},
          {tr("Audio"), {ui->audioTab}},
-         {tr("Controls"), {ui->inputTab, ui->hotkeysTab}}},
+         {tr("Controls"), ui->inputTab->GetSubTabs()}},
     };
 
     [[maybe_unused]] const QSignalBlocker blocker(ui->selectorList);
@@ -95,6 +102,14 @@ void ConfigureDialog::PopulateSelectionList() {
     }
 }
 
+void ConfigureDialog::OnLanguageChanged(const QString& locale) {
+    emit LanguageChanged(locale);
+    // first apply the configuration, and then restore the display
+    ApplyConfiguration();
+    RetranslateUI();
+    SetConfiguration();
+}
+
 void ConfigureDialog::UpdateVisibleTabs() {
     const auto items = ui->selectorList->selectedItems();
     if (items.isEmpty()) {
@@ -105,8 +120,10 @@ void ConfigureDialog::UpdateVisibleTabs() {
         {ui->generalTab, tr("General")},
         {ui->systemTab, tr("System")},
         {ui->profileManagerTab, tr("Profiles")},
-        {ui->inputTab, tr("Input")},
+        {ui->inputTab, tr("Controls")},
         {ui->hotkeysTab, tr("Hotkeys")},
+        {ui->cpuTab, tr("CPU")},
+        {ui->cpuDebugTab, tr("Debug")},
         {ui->graphicsTab, tr("Graphics")},
         {ui->graphicsAdvancedTab, tr("Advanced")},
         {ui->audioTab, tr("Audio")},
@@ -124,6 +141,6 @@ void ConfigureDialog::UpdateVisibleTabs() {
     const QList<QWidget*> tabs = qvariant_cast<QList<QWidget*>>(items[0]->data(Qt::UserRole));
 
     for (const auto tab : tabs) {
-        ui->tabWidget->addTab(tab, widgets.at(tab));
+        ui->tabWidget->addTab(tab, tab->accessibleName());
     }
 }

@@ -30,6 +30,7 @@
 #include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/frontend/framebuffer_layout.h"
+#include "core/hle/kernel/process.h"
 #include "core/settings.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
@@ -63,7 +64,8 @@ void EmuThread::run() {
     emit LoadProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
 
     system.Renderer().Rasterizer().LoadDiskResources(
-        stop_run, [this](VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total) {
+        system.CurrentProcess()->GetTitleID(), stop_run,
+        [this](VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total) {
             emit LoadProgress(stage, value, total);
         });
 
@@ -216,15 +218,6 @@ public:
 
     virtual ~RenderWidget() = default;
 
-    /// Called on the UI thread when this Widget is ready to draw
-    /// Dervied classes can override this to draw the latest frame.
-    virtual void Present() {}
-
-    void paintEvent(QPaintEvent* event) override {
-        Present();
-        update();
-    }
-
     QPaintEngine* paintEngine() const override {
         return nullptr;
     }
@@ -243,20 +236,8 @@ public:
         context = std::move(context_);
     }
 
-    void Present() override {
-        if (!isVisible()) {
-            return;
-        }
-
-        context->MakeCurrent();
-        if (Core::System::GetInstance().Renderer().TryPresent(100)) {
-            context->SwapBuffers();
-            glFinish();
-        }
-    }
-
 private:
-    std::unique_ptr<Core::Frontend::GraphicsContext> context{};
+    std::unique_ptr<Core::Frontend::GraphicsContext> context;
 };
 
 #ifdef HAS_VULKAN
@@ -304,8 +285,9 @@ static Core::Frontend::EmuWindow::WindowSystemInfo GetWindowSystemInfo(QWindow* 
     return wsi;
 }
 
-GRenderWindow::GRenderWindow(GMainWindow* parent_, EmuThread* emu_thread_)
-    : QWidget(parent_), emu_thread(emu_thread_) {
+GRenderWindow::GRenderWindow(GMainWindow* parent, EmuThread* emu_thread_,
+                             std::shared_ptr<InputCommon::InputSubsystem> input_subsystem_)
+    : QWidget(parent), emu_thread(emu_thread_), input_subsystem{std::move(input_subsystem_)} {
     setWindowTitle(QStringLiteral("yuzu %1 | %2-%3")
                        .arg(QString::fromUtf8(Common::g_build_name),
                             QString::fromUtf8(Common::g_scm_branch),
@@ -314,15 +296,15 @@ GRenderWindow::GRenderWindow(GMainWindow* parent_, EmuThread* emu_thread_)
     auto layout = new QHBoxLayout(this);
     layout->setMargin(0);
     setLayout(layout);
-    InputCommon::Init();
+    input_subsystem->Initialize();
 
     this->setMouseTracking(true);
 
-    connect(this, &GRenderWindow::FirstFrameDisplayed, parent_, &GMainWindow::OnLoadComplete);
+    connect(this, &GRenderWindow::FirstFrameDisplayed, parent, &GMainWindow::OnLoadComplete);
 }
 
 GRenderWindow::~GRenderWindow() {
-    InputCommon::Shutdown();
+    input_subsystem->Shutdown();
 }
 
 void GRenderWindow::PollEvents() {
@@ -391,11 +373,11 @@ void GRenderWindow::closeEvent(QCloseEvent* event) {
 }
 
 void GRenderWindow::keyPressEvent(QKeyEvent* event) {
-    InputCommon::GetKeyboard()->PressKey(event->key());
+    input_subsystem->GetKeyboard()->PressKey(event->key());
 }
 
 void GRenderWindow::keyReleaseEvent(QKeyEvent* event) {
-    InputCommon::GetKeyboard()->ReleaseKey(event->key());
+    input_subsystem->GetKeyboard()->ReleaseKey(event->key());
 }
 
 void GRenderWindow::mousePressEvent(QMouseEvent* event) {
@@ -409,7 +391,7 @@ void GRenderWindow::mousePressEvent(QMouseEvent* event) {
         const auto [x, y] = ScaleTouch(pos);
         this->TouchPressed(x, y);
     } else if (event->button() == Qt::RightButton) {
-        InputCommon::GetMotionEmu()->BeginTilt(pos.x(), pos.y());
+        input_subsystem->GetMotionEmu()->BeginTilt(pos.x(), pos.y());
     }
     QWidget::mousePressEvent(event);
 }
@@ -423,7 +405,7 @@ void GRenderWindow::mouseMoveEvent(QMouseEvent* event) {
     auto pos = event->pos();
     const auto [x, y] = ScaleTouch(pos);
     this->TouchMoved(x, y);
-    InputCommon::GetMotionEmu()->Tilt(pos.x(), pos.y());
+    input_subsystem->GetMotionEmu()->Tilt(pos.x(), pos.y());
     QWidget::mouseMoveEvent(event);
 }
 
@@ -436,7 +418,7 @@ void GRenderWindow::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         this->TouchReleased();
     } else if (event->button() == Qt::RightButton) {
-        InputCommon::GetMotionEmu()->EndTilt();
+        input_subsystem->GetMotionEmu()->EndTilt();
     }
 }
 
@@ -451,7 +433,7 @@ void GRenderWindow::TouchUpdateEvent(const QTouchEvent* event) {
     int active_points = 0;
 
     // average all active touch points
-    for (const auto tp : event->touchPoints()) {
+    for (const auto& tp : event->touchPoints()) {
         if (tp.state() & (Qt::TouchPointPressed | Qt::TouchPointMoved | Qt::TouchPointStationary)) {
             active_points++;
             pos += tp.pos();
@@ -485,7 +467,7 @@ bool GRenderWindow::event(QEvent* event) {
 
 void GRenderWindow::focusOutEvent(QFocusEvent* event) {
     QWidget::focusOutEvent(event);
-    InputCommon::GetKeyboard()->ReleaseAllKeys();
+    input_subsystem->GetKeyboard()->ReleaseAllKeys();
 }
 
 void GRenderWindow::resizeEvent(QResizeEvent* event) {
@@ -567,7 +549,7 @@ void GRenderWindow::CaptureScreenshot(u32 res_scale, const QString& screenshot_p
     screenshot_image = QImage(QSize(layout.width, layout.height), QImage::Format_RGB32);
     renderer.RequestScreenshot(
         screenshot_image.bits(),
-        [=] {
+        [=, this] {
             const std::string std_screenshot_path = screenshot_path.toStdString();
             if (screenshot_image.mirrored(false, true).save(screenshot_path)) {
                 LOG_INFO(Frontend, "Screenshot saved to \"{}\"", std_screenshot_path);

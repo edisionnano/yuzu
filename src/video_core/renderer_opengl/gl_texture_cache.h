@@ -90,7 +90,7 @@ public:
                       Tegra::Texture::SwizzleSource z_source,
                       Tegra::Texture::SwizzleSource w_source);
 
-    void DecorateViewName(GPUVAddr gpu_addr, std::string prefix);
+    void DecorateViewName(GPUVAddr gpu_addr, const std::string& prefix);
 
     void MarkAsModified(u64 tick) {
         surface.MarkAsModified(true, tick);
@@ -129,8 +129,10 @@ private:
 
 class TextureCacheOpenGL final : public TextureCacheBase {
 public:
-    explicit TextureCacheOpenGL(Core::System& system, VideoCore::RasterizerInterface& rasterizer,
-                                const Device& device, StateTracker& state_tracker);
+    explicit TextureCacheOpenGL(VideoCore::RasterizerInterface& rasterizer,
+                                Tegra::Engines::Maxwell3D& maxwell3d,
+                                Tegra::MemoryManager& gpu_memory, const Device& device,
+                                StateTracker& state_tracker);
     ~TextureCacheOpenGL();
 
 protected:

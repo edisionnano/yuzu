@@ -26,7 +26,7 @@ Buffer::Buffer(const Device& device, VAddr cpu_addr, std::size_t size)
     : VideoCommon::BufferBlock{cpu_addr, size} {
     gl_buffer.Create();
     glNamedBufferData(gl_buffer.handle, static_cast<GLsizeiptr>(size), nullptr, GL_DYNAMIC_DRAW);
-    if (device.HasVertexBufferUnifiedMemory()) {
+    if (device.UseAssemblyShaders() || device.HasVertexBufferUnifiedMemory()) {
         glMakeNamedBufferResidentNV(gl_buffer.handle, GL_READ_WRITE);
         glGetNamedBufferParameterui64vNV(gl_buffer.handle, GL_BUFFER_GPU_ADDRESS_NV, &gpu_address);
     }
@@ -59,9 +59,10 @@ void Buffer::CopyFrom(const Buffer& src, std::size_t src_offset, std::size_t dst
                              static_cast<GLintptr>(dst_offset), static_cast<GLsizeiptr>(size));
 }
 
-OGLBufferCache::OGLBufferCache(RasterizerOpenGL& rasterizer, Core::System& system,
+OGLBufferCache::OGLBufferCache(VideoCore::RasterizerInterface& rasterizer,
+                               Tegra::MemoryManager& gpu_memory, Core::Memory::Memory& cpu_memory,
                                const Device& device_, std::size_t stream_size)
-    : GenericBufferCache{rasterizer, system,
+    : GenericBufferCache{rasterizer, gpu_memory, cpu_memory,
                          std::make_unique<OGLStreamBuffer>(device_, stream_size, true)},
       device{device_} {
     if (!device.HasFastBufferSubData()) {

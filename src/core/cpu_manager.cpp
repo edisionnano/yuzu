@@ -41,9 +41,9 @@ void CpuManager::Shutdown() {
     running_mode = false;
     Pause(false);
     if (is_multicore) {
-        for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
-            core_data[core].host_thread->join();
-            core_data[core].host_thread.reset();
+        for (auto& data : core_data) {
+            data.host_thread->join();
+            data.host_thread.reset();
         }
     } else {
         core_data[0].host_thread->join();
@@ -52,15 +52,15 @@ void CpuManager::Shutdown() {
 }
 
 std::function<void(void*)> CpuManager::GetGuestThreadStartFunc() {
-    return std::function<void(void*)>(GuestThreadFunction);
+    return GuestThreadFunction;
 }
 
 std::function<void(void*)> CpuManager::GetIdleThreadStartFunc() {
-    return std::function<void(void*)>(IdleThreadFunction);
+    return IdleThreadFunction;
 }
 
 std::function<void(void*)> CpuManager::GetSuspendThreadStartFunc() {
-    return std::function<void(void*)>(SuspendThreadFunction);
+    return SuspendThreadFunction;
 }
 
 void CpuManager::GuestThreadFunction(void* cpu_manager_) {
@@ -166,25 +166,23 @@ void CpuManager::MultiCorePause(bool paused) {
         bool all_not_barrier = false;
         while (!all_not_barrier) {
             all_not_barrier = true;
-            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
-                all_not_barrier &=
-                    !core_data[core].is_running.load() && core_data[core].initialized.load();
+            for (const auto& data : core_data) {
+                all_not_barrier &= !data.is_running.load() && data.initialized.load();
             }
         }
-        for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
-            core_data[core].enter_barrier->Set();
+        for (auto& data : core_data) {
+            data.enter_barrier->Set();
         }
         if (paused_state.load()) {
             bool all_barrier = false;
             while (!all_barrier) {
                 all_barrier = true;
-                for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
-                    all_barrier &=
-                        core_data[core].is_paused.load() && core_data[core].initialized.load();
+                for (const auto& data : core_data) {
+                    all_barrier &= data.is_paused.load() && data.initialized.load();
                 }
             }
-            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
-                core_data[core].exit_barrier->Set();
+            for (auto& data : core_data) {
+                data.exit_barrier->Set();
             }
         }
     } else {
@@ -192,9 +190,8 @@ void CpuManager::MultiCorePause(bool paused) {
         bool all_barrier = false;
         while (!all_barrier) {
             all_barrier = true;
-            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
-                all_barrier &=
-                    core_data[core].is_paused.load() && core_data[core].initialized.load();
+            for (const auto& data : core_data) {
+                all_barrier &= data.is_paused.load() && data.initialized.load();
             }
         }
         /// Don't release the barrier
@@ -331,7 +328,7 @@ void CpuManager::RunThread(std::size_t core) {
     system.RegisterCoreThread(core);
     std::string name;
     if (is_multicore) {
-        name = "yuzu:CoreCPUThread_" + std::to_string(core);
+        name = "yuzu:CPUCore_" + std::to_string(core);
     } else {
         name = "yuzu:CPUThread";
     }
@@ -368,6 +365,8 @@ void CpuManager::RunThread(std::size_t core) {
     data.enter_barrier.reset();
     data.exit_barrier.reset();
     data.initialized = false;
+
+    MicroProfileOnThreadExit();
 }
 
 } // namespace Core

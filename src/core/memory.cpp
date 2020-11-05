@@ -120,9 +120,9 @@ struct Memory::Impl {
         if ((addr & 1) == 0) {
             return Read<u16_le>(addr);
         } else {
-            const u8 a{Read<u8>(addr)};
-            const u8 b{Read<u8>(addr + sizeof(u8))};
-            return (static_cast<u16>(b) << 8) | a;
+            const u32 a{Read<u8>(addr)};
+            const u32 b{Read<u8>(addr + sizeof(u8))};
+            return static_cast<u16>((b << 8) | a);
         }
     }
 
@@ -130,9 +130,9 @@ struct Memory::Impl {
         if ((addr & 3) == 0) {
             return Read<u32_le>(addr);
         } else {
-            const u16 a{Read16(addr)};
-            const u16 b{Read16(addr + sizeof(u16))};
-            return (static_cast<u32>(b) << 16) | a;
+            const u32 a{Read16(addr)};
+            const u32 b{Read16(addr + sizeof(u16))};
+            return (b << 16) | a;
         }
     }
 
@@ -567,7 +567,7 @@ struct Memory::Impl {
      * @param page_table The page table to use to perform the mapping.
      * @param base       The base address to begin mapping at.
      * @param size       The total size of the range in bytes.
-     * @param memory     The memory to map.
+     * @param target     The target address to begin mapping from.
      * @param type       The page type to map the memory as.
      */
     void MapPages(Common::PageTable& page_table, VAddr base, u64 size, PAddr target,
@@ -704,7 +704,7 @@ struct Memory::Impl {
         u8* page_pointer = current_page_table->pointers[vaddr >> PAGE_BITS];
         if (page_pointer != nullptr) {
             // NOTE: Avoid adding any extra logic to this fast-path block
-            T volatile* pointer = reinterpret_cast<T volatile*>(&page_pointer[vaddr]);
+            auto* pointer = reinterpret_cast<volatile T*>(&page_pointer[vaddr]);
             return Common::AtomicCompareAndSwap(pointer, data, expected);
         }
 
@@ -720,9 +720,8 @@ struct Memory::Impl {
         case Common::PageType::RasterizerCachedMemory: {
             u8* host_ptr{GetPointerFromRasterizerCachedMemory(vaddr)};
             system.GPU().InvalidateRegion(vaddr, sizeof(T));
-            T volatile* pointer = reinterpret_cast<T volatile*>(&host_ptr);
+            auto* pointer = reinterpret_cast<volatile T*>(&host_ptr);
             return Common::AtomicCompareAndSwap(pointer, data, expected);
-            break;
         }
         default:
             UNREACHABLE();
@@ -734,7 +733,7 @@ struct Memory::Impl {
         u8* const page_pointer = current_page_table->pointers[vaddr >> PAGE_BITS];
         if (page_pointer != nullptr) {
             // NOTE: Avoid adding any extra logic to this fast-path block
-            u64 volatile* pointer = reinterpret_cast<u64 volatile*>(&page_pointer[vaddr]);
+            auto* pointer = reinterpret_cast<volatile u64*>(&page_pointer[vaddr]);
             return Common::AtomicCompareAndSwap(pointer, data, expected);
         }
 
@@ -750,9 +749,8 @@ struct Memory::Impl {
         case Common::PageType::RasterizerCachedMemory: {
             u8* host_ptr{GetPointerFromRasterizerCachedMemory(vaddr)};
             system.GPU().InvalidateRegion(vaddr, sizeof(u128));
-            u64 volatile* pointer = reinterpret_cast<u64 volatile*>(&host_ptr);
+            auto* pointer = reinterpret_cast<volatile u64*>(&host_ptr);
             return Common::AtomicCompareAndSwap(pointer, data, expected);
-            break;
         }
         default:
             UNREACHABLE();

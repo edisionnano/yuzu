@@ -42,7 +42,6 @@ Flags MakeInvalidationFlags() {
     flags[DepthWriteEnable] = true;
     flags[DepthCompareOp] = true;
     flags[FrontFace] = true;
-    flags[PrimitiveTopology] = true;
     flags[StencilOp] = true;
     flags[StencilTestEnable] = true;
     return flags;
@@ -112,10 +111,6 @@ void SetupDirtyFrontFace(Tables& tables) {
     table[OFF(screen_y_control)] = FrontFace;
 }
 
-void SetupDirtyPrimitiveTopology(Tables& tables) {
-    tables[0][OFF(draw.topology)] = PrimitiveTopology;
-}
-
 void SetupDirtyStencilOp(Tables& tables) {
     auto& table = tables[0];
     table[OFF(stencil_front_op_fail)] = StencilOp;
@@ -137,12 +132,9 @@ void SetupDirtyStencilTestEnable(Tables& tables) {
 
 } // Anonymous namespace
 
-StateTracker::StateTracker(Core::System& system)
-    : system{system}, invalidation_flags{MakeInvalidationFlags()} {}
-
-void StateTracker::Initialize() {
-    auto& dirty = system.GPU().Maxwell3D().dirty;
-    auto& tables = dirty.tables;
+StateTracker::StateTracker(Tegra::GPU& gpu)
+    : flags{gpu.Maxwell3D().dirty.flags}, invalidation_flags{MakeInvalidationFlags()} {
+    auto& tables = gpu.Maxwell3D().dirty.tables;
     SetupDirtyRenderTargets(tables);
     SetupDirtyViewports(tables);
     SetupDirtyScissors(tables);
@@ -156,12 +148,8 @@ void StateTracker::Initialize() {
     SetupDirtyDepthWriteEnable(tables);
     SetupDirtyDepthCompareOp(tables);
     SetupDirtyFrontFace(tables);
-    SetupDirtyPrimitiveTopology(tables);
     SetupDirtyStencilOp(tables);
-}
-
-void StateTracker::InvalidateCommandBufferState() {
-    system.GPU().Maxwell3D().dirty.flags |= invalidation_flags;
+    SetupDirtyStencilTestEnable(tables);
 }
 
 } // namespace Vulkan

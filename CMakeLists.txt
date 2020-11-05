@@ -13,6 +13,7 @@ project(yuzu)
 option(ENABLE_SDL2 "Enable the SDL2 frontend" ON)
 
 option(ENABLE_QT "Enable the Qt frontend" ON)
+option(ENABLE_QT_TRANSLATION "Enable translations for the Qt frontend" OFF)
 CMAKE_DEPENDENT_OPTION(YUZU_USE_BUNDLED_QT "Download bundled Qt binaries" ON "ENABLE_QT;MSVC" OFF)
 
 option(ENABLE_WEB_SERVICE "Enable web services (telemetry, etc.)" ON)
@@ -118,8 +119,17 @@ message(STATUS "Target architecture: ${ARCHITECTURE}")
 # Configure C++ standard
 # ===========================
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# boost asio's concept usage doesn't play nicely with some compilers yet.
+add_definitions(-DBOOST_ASIO_DISABLE_CONCEPTS)
+if (MSVC)
+    add_compile_options(/std:c++latest)
+
+    # cubeb and boost still make use of deprecated result_of.
+    add_definitions(-D_HAS_DEPRECATED_RESULT_OF)
+else()
+    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+endif()
 
 # Output binaries to bin/
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
@@ -149,15 +159,15 @@ macro(yuzu_find_packages)
     # Capitalization matters here. We need the naming to match the generated paths from Conan
     set(REQUIRED_LIBS
     #    Cmake Pkg Prefix  Version     Conan Pkg
-        "Boost             1.71        boost/1.72.0"
-        "Catch2            2.11        catch2/2.11.0"
-        "fmt               7.0         fmt/7.0.1"
+        "Boost             1.73        boost/1.73.0"
+        "Catch2            2.13        catch2/2.13.0"
+        "fmt               7.1         fmt/7.1.0"
     # can't use until https://github.com/bincrafters/community/issues/1173
         #"libzip            1.5         libzip/1.5.2@bincrafters/stable"
         "lz4               1.8         lz4/1.9.2"
-        "nlohmann_json     3.7         nlohmann_json/3.7.3"
+        "nlohmann_json     3.8         nlohmann_json/3.8.0"
         "ZLIB              1.2         zlib/1.2.11"
-        "zstd              1.4         zstd/1.4.4"
+        "zstd              1.4         zstd/1.4.5"
     )
 
     foreach(PACKAGE ${REQUIRED_LIBS})
@@ -200,7 +210,7 @@ if(ENABLE_QT)
     set(QT_PREFIX_HINT)
     if(YUZU_USE_BUNDLED_QT)
         if ((MSVC_VERSION GREATER_EQUAL 1910 AND MSVC_VERSION LESS 1930) AND ARCHITECTURE_x86_64)
-            set(QT_VER qt-5.12.0-msvc2017_64)
+            set(QT_VER qt-5.12.8-msvc2017_64)
         else()
             message(FATAL_ERROR "No bundled Qt binaries for your toolchain. Disable YUZU_USE_BUNDLED_QT and provide your own.")
         endif()
@@ -214,6 +224,10 @@ if(ENABLE_QT)
     find_package(Qt5 5.9 COMPONENTS Widgets ${QT_PREFIX_HINT})
     if (YUZU_USE_QT_WEB_ENGINE)
         find_package(Qt5 COMPONENTS WebEngineCore WebEngineWidgets)
+    endif()
+	
+    if (ENABLE_QT_TRANSLATION)
+        find_package(Qt5 REQUIRED COMPONENTS LinguistTools ${QT_PREFIX_HINT})
     endif()
     if (NOT Qt5_FOUND)
         list(APPEND CONAN_REQUIRED_LIBS "qt/5.14.1@bincrafters/stable")
@@ -249,6 +263,7 @@ if (CONAN_REQUIRED_LIBS)
         libzip:with_openssl=False
         libzip:enable_windows_crypto=False
     )
+
     conan_check(VERSION 1.24.0 REQUIRED)
     # Add the bincrafters remote
     conan_add_remote(NAME bincrafters
@@ -330,13 +345,28 @@ elseif(SDL2_FOUND)
 endif()
 
 # Ensure libusb is properly configured (based on dolphin libusb include)
-include(FindPkgConfig)
-find_package(LibUSB)
+if(NOT APPLE)
+    include(FindPkgConfig)
+    find_package(LibUSB)
+endif()
 if (NOT LIBUSB_FOUND)
     add_subdirectory(externals/libusb)
+    set(LIBUSB_INCLUDE_DIR "")
     set(LIBUSB_LIBRARIES usb)
 endif()
 
+# Use system installed ffmpeg.
+if (NOT MSVC)
+    find_package(FFmpeg REQUIRED)
+else()
+    set(FFMPEG_EXT_NAME "ffmpeg-4.2.1")
+    set(FFMPEG_PATH "${CMAKE_BINARY_DIR}/externals/${FFMPEG_EXT_NAME}")
+    download_bundled_external("ffmpeg/" ${FFMPEG_EXT_NAME} "")
+    set(FFMPEG_FOUND YES)
+    set(FFMPEG_INCLUDE_DIR "${FFMPEG_PATH}/include" CACHE PATH "Path to FFmpeg headers" FORCE)
+    set(FFMPEG_LIBRARY_DIR "${FFMPEG_PATH}/bin" CACHE PATH "Path to FFmpeg library" FORCE)
+    set(FFMPEG_DLL_DIR "${FFMPEG_PATH}/bin" CACHE PATH "Path to FFmpeg dll's" FORCE)
+endif()
 
 # Prefer the -pthread flag on Linux.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -440,7 +470,7 @@ endif()
 # against all the src files. This should be used before making a pull request.
 # =======================================================================
 
-set(CLANG_FORMAT_POSTFIX "-6.0")
+set(CLANG_FORMAT_POSTFIX "-10")
 find_program(CLANG_FORMAT
     NAMES clang-format${CLANG_FORMAT_POSTFIX}
           clang-format

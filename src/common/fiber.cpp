@@ -79,9 +79,9 @@ void Fiber::Exit() {
     released = true;
 }
 
-void Fiber::SetRewindPoint(std::function<void(void*)>&& rewind_func, void* start_parameter) {
+void Fiber::SetRewindPoint(std::function<void(void*)>&& rewind_func, void* rewind_param) {
     rewind_point = std::move(rewind_func);
-    rewind_parameter = start_parameter;
+    rewind_parameter = rewind_param;
 }
 
 void Fiber::Rewind() {
@@ -91,7 +91,7 @@ void Fiber::Rewind() {
     SwitchToFiber(impl->rewind_handle);
 }
 
-void Fiber::YieldTo(std::shared_ptr<Fiber>& from, std::shared_ptr<Fiber>& to) {
+void Fiber::YieldTo(std::shared_ptr<Fiber> from, std::shared_ptr<Fiber> to) {
     ASSERT_MSG(from != nullptr, "Yielding fiber is null!");
     ASSERT_MSG(to != nullptr, "Next fiber is null!");
     to->guard.lock();
@@ -161,9 +161,9 @@ Fiber::Fiber(std::function<void(void*)>&& entry_point_func, void* start_paramete
         boost::context::detail::make_fcontext(stack_base, impl->stack.size(), FiberStartFunc);
 }
 
-void Fiber::SetRewindPoint(std::function<void(void*)>&& rewind_func, void* start_parameter) {
+void Fiber::SetRewindPoint(std::function<void(void*)>&& rewind_func, void* rewind_param) {
     rewind_point = std::move(rewind_func);
-    rewind_parameter = start_parameter;
+    rewind_parameter = rewind_param;
 }
 
 Fiber::Fiber() : impl{std::make_unique<FiberImpl>()} {}
@@ -199,7 +199,7 @@ void Fiber::Rewind() {
     boost::context::detail::jump_fcontext(impl->rewind_context, this);
 }
 
-void Fiber::YieldTo(std::shared_ptr<Fiber>& from, std::shared_ptr<Fiber>& to) {
+void Fiber::YieldTo(std::shared_ptr<Fiber> from, std::shared_ptr<Fiber> to) {
     ASSERT_MSG(from != nullptr, "Yielding fiber is null!");
     ASSERT_MSG(to != nullptr, "Next fiber is null!");
     to->guard.lock();

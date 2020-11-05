@@ -2,15 +2,13 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstring>
 #include <functional>
 #include <thread>
 #include <boost/asio.hpp>
-#include <boost/bind.hpp>
 #include "common/logging/log.h"
+#include "core/settings.h"
 #include "input_common/udp/client.h"
 #include "input_common/udp/protocol.h"
 
@@ -28,11 +26,11 @@ class Socket {
 public:
     using clock = std::chrono::system_clock;
 
-    explicit Socket(const std::string& host, u16 port, u8 pad_index, u32 client_id,
-                    SocketCallback callback)
-        : callback(std::move(callback)), timer(io_service),
-          socket(io_service, udp::endpoint(udp::v4(), 0)), client_id(client_id),
-          pad_index(pad_index) {
+    explicit Socket(const std::string& host, u16 port, std::size_t pad_index_, u32 client_id_,
+                    SocketCallback callback_)
+        : callback(std::move(callback_)), timer(io_service),
+          socket(io_service, udp::endpoint(udp::v4(), 0)), client_id(client_id_),
+          pad_index(pad_index_) {
         boost::system::error_code ec{};
         auto ipv4 = boost::asio::ip::make_address_v4(host, ec);
         if (ec.value() != boost::system::errc::success) {
@@ -95,13 +93,17 @@ private:
     void HandleSend(const boost::system::error_code& error) {
         boost::system::error_code _ignored{};
         // Send a request for getting port info for the pad
-        Request::PortInfo port_info{1, {pad_index, 0, 0, 0}};
+        const Request::PortInfo port_info{1, {static_cast<u8>(pad_index), 0, 0, 0}};
         const auto port_message = Request::Create(port_info, client_id);
         std::memcpy(&send_buffer1, &port_message, PORT_INFO_SIZE);
         socket.send_to(boost::asio::buffer(send_buffer1), send_endpoint, {}, _ignored);
 
         // Send a request for getting pad data for the pad
-        Request::PadData pad_data{Request::PadData::Flags::Id, pad_index, EMPTY_MAC_ADDRESS};
+        const Request::PadData pad_data{
+            Request::PadData::Flags::Id,
+            static_cast<u8>(pad_index),
+            EMPTY_MAC_ADDRESS,
+        };
         const auto pad_message = Request::Create(pad_data, client_id);
         std::memcpy(send_buffer2.data(), &pad_message, PAD_DATA_SIZE);
         socket.send_to(boost::asio::buffer(send_buffer2), send_endpoint, {}, _ignored);
@@ -114,7 +116,7 @@ private:
     udp::socket socket;
 
     u32 client_id{};
-    u8 pad_index{};
+    std::size_t pad_index{};
 
     static constexpr std::size_t PORT_INFO_SIZE = sizeof(Message<Request::PortInfo>);
     static constexpr std::size_t PAD_DATA_SIZE = sizeof(Message<Request::PadData>);
@@ -132,21 +134,59 @@ static void SocketLoop(Socket* socket) {
     socket->Loop();
 }
 
-Client::Client(std::shared_ptr<DeviceStatus> status, const std::string& host, u16 port,
-               u8 pad_index, u32 client_id)
-    : status(std::move(status)) {
-    StartCommunication(host, port, pad_index, client_id);
+Client::Client() {
+    LOG_INFO(Input, "Udp Initialization started");
+    for (std::size_t client = 0; client < clients.size(); client++) {
+        const auto pad = client % 4;
+        StartCommunication(client, Settings::values.udp_input_address,
+                           Settings::values.udp_input_port, pad, 24872);
+        // Set motion parameters
+        // SetGyroThreshold value should be dependent on GyroscopeZeroDriftMode
+        // Real HW values are unknown, 0.0001 is an approximate to Standard
+        clients[client].motion.SetGyroThreshold(0.0001f);
+    }
 }
 
 Client::~Client() {
-    socket->Stop();
-    thread.join();
+    Reset();
 }
 
-void Client::ReloadSocket(const std::string& host, u16 port, u8 pad_index, u32 client_id) {
-    socket->Stop();
-    thread.join();
-    StartCommunication(host, port, pad_index, client_id);
+std::vector<Common::ParamPackage> Client::GetInputDevices() const {
+    std::vector<Common::ParamPackage> devices;
+    for (std::size_t client = 0; client < clients.size(); client++) {
+        if (!DeviceConnected(client)) {
+            continue;
+        }
+        std::string name = fmt::format("UDP Controller {}", client);
+        devices.emplace_back(Common::ParamPackage{
+            {"class", "cemuhookudp"},
+            {"display", std::move(name)},
+            {"port", std::to_string(client)},
+        });
+    }
+    return devices;
+}
+
+bool Client::DeviceConnected(std::size_t pad) const {
+    // Use last timestamp to detect if the socket has stopped sending data
+    const auto now = std::chrono::system_clock::now();
+    const auto time_difference = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - clients[pad].last_motion_update)
+            .count());
+    return time_difference < 1000 && clients[pad].active == 1;
+}
+
+void Client::ReloadUDPClient() {
+    for (std::size_t client = 0; client < clients.size(); client++) {
+        ReloadSocket(Settings::values.udp_input_address, Settings::values.udp_input_port, client);
+    }
+}
+void Client::ReloadSocket(const std::string& host, u16 port, std::size_t pad_index, u32 client_id) {
+    // client number must be determined from host / port and pad index
+    const std::size_t client = pad_index;
+    clients[client].socket->Stop();
+    clients[client].thread.join();
+    StartCommunication(client, host, port, pad_index, client_id);
 }
 
 void Client::OnVersion(Response::Version data) {
@@ -158,23 +198,36 @@ void Client::OnPortInfo(Response::PortInfo data) {
 }
 
 void Client::OnPadData(Response::PadData data) {
+    // Client number must be determined from host / port and pad index
+    const std::size_t client = data.info.id;
     LOG_TRACE(Input, "PadData packet received");
-    if (data.packet_counter <= packet_sequence) {
+    if (data.packet_counter == clients[client].packet_sequence) {
         LOG_WARNING(
             Input,
             "PadData packet dropped because its stale info. Current count: {} Packet count: {}",
-            packet_sequence, data.packet_counter);
+            clients[client].packet_sequence, data.packet_counter);
         return;
     }
-    packet_sequence = data.packet_counter;
-    // TODO: Check how the Switch handles motions and how the CemuhookUDP motion
-    // directions correspond to the ones of the Switch
-    Common::Vec3f accel = Common::MakeVec<float>(data.accel.x, data.accel.y, data.accel.z);
-    Common::Vec3f gyro = Common::MakeVec<float>(data.gyro.pitch, data.gyro.yaw, data.gyro.roll);
-    {
-        std::lock_guard guard(status->update_mutex);
+    clients[client].active = data.info.is_pad_active;
+    clients[client].packet_sequence = data.packet_counter;
+    const auto now = std::chrono::system_clock::now();
+    const auto time_difference =
+        static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                             now - clients[client].last_motion_update)
+                             .count());
+    clients[client].last_motion_update = now;
+    const Common::Vec3f raw_gyroscope = {data.gyro.pitch, data.gyro.roll, -data.gyro.yaw};
+    clients[client].motion.SetAcceleration({data.accel.x, -data.accel.z, data.accel.y});
+    // Gyroscope values are not it the correct scale from better joy.
+    // Dividing by 312 allows us to make one full turn = 1 turn
+    // This must be a configurable valued called sensitivity
+    clients[client].motion.SetGyroscope(raw_gyroscope / 312.0f);
+    clients[client].motion.UpdateRotation(time_difference);
+    clients[client].motion.UpdateOrientation(time_difference);
 
-        status->motion_status = {accel, gyro};
+    {
+        std::lock_guard guard(clients[client].status.update_mutex);
+        clients[client].status.motion_status = clients[client].motion.GetMotion();
 
         // TODO: add a setting for "click" touch. Click touch refers to a device that differentiates
         // between a simple "tap" and a hard press that causes the touch screen to click.
@@ -183,41 +236,115 @@ void Client::OnPadData(Response::PadData data) {
         float x = 0;
         float y = 0;
 
-        if (is_active && status->touch_calibration) {
-            const u16 min_x = status->touch_calibration->min_x;
-            const u16 max_x = status->touch_calibration->max_x;
-            const u16 min_y = status->touch_calibration->min_y;
-            const u16 max_y = status->touch_calibration->max_y;
+        if (is_active && clients[client].status.touch_calibration) {
+            const u16 min_x = clients[client].status.touch_calibration->min_x;
+            const u16 max_x = clients[client].status.touch_calibration->max_x;
+            const u16 min_y = clients[client].status.touch_calibration->min_y;
+            const u16 max_y = clients[client].status.touch_calibration->max_y;
 
-            x = (std::clamp(static_cast<u16>(data.touch_1.x), min_x, max_x) - min_x) /
+            x = static_cast<float>(std::clamp(static_cast<u16>(data.touch_1.x), min_x, max_x) -
+                                   min_x) /
                 static_cast<float>(max_x - min_x);
-            y = (std::clamp(static_cast<u16>(data.touch_1.y), min_y, max_y) - min_y) /
+            y = static_cast<float>(std::clamp(static_cast<u16>(data.touch_1.y), min_y, max_y) -
+                                   min_y) /
                 static_cast<float>(max_y - min_y);
         }
 
-        status->touch_status = {x, y, is_active};
+        clients[client].status.touch_status = {x, y, is_active};
+
+        if (configuring) {
+            const Common::Vec3f gyroscope = clients[client].motion.GetGyroscope();
+            const Common::Vec3f accelerometer = clients[client].motion.GetAcceleration();
+            UpdateYuzuSettings(client, accelerometer, gyroscope, is_active);
+        }
     }
 }
 
-void Client::StartCommunication(const std::string& host, u16 port, u8 pad_index, u32 client_id) {
+void Client::StartCommunication(std::size_t client, const std::string& host, u16 port,
+                                std::size_t pad_index, u32 client_id) {
     SocketCallback callback{[this](Response::Version version) { OnVersion(version); },
                             [this](Response::PortInfo info) { OnPortInfo(info); },
                             [this](Response::PadData data) { OnPadData(data); }};
     LOG_INFO(Input, "Starting communication with UDP input server on {}:{}", host, port);
-    socket = std::make_unique<Socket>(host, port, pad_index, client_id, callback);
-    thread = std::thread{SocketLoop, this->socket.get()};
+    clients[client].socket = std::make_unique<Socket>(host, port, pad_index, client_id, callback);
+    clients[client].thread = std::thread{SocketLoop, clients[client].socket.get()};
 }
 
-void TestCommunication(const std::string& host, u16 port, u8 pad_index, u32 client_id,
-                       std::function<void()> success_callback,
-                       std::function<void()> failure_callback) {
+void Client::Reset() {
+    for (auto& client : clients) {
+        client.socket->Stop();
+        client.thread.join();
+    }
+}
+
+void Client::UpdateYuzuSettings(std::size_t client, const Common::Vec3<float>& acc,
+                                const Common::Vec3<float>& gyro, bool touch) {
+    if (gyro.Length() > 0.2f) {
+        LOG_DEBUG(Input, "UDP Controller {}: gyro=({}, {}, {}), accel=({}, {}, {}), touch={}",
+                  client, gyro[0], gyro[1], gyro[2], acc[0], acc[1], acc[2], touch);
+    }
+    UDPPadStatus pad;
+    if (touch) {
+        pad.touch = PadTouch::Click;
+        pad_queue[client].Push(pad);
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        if (gyro[i] > 5.0f || gyro[i] < -5.0f) {
+            pad.motion = static_cast<PadMotion>(i);
+            pad.motion_value = gyro[i];
+            pad_queue[client].Push(pad);
+        }
+        if (acc[i] > 1.75f || acc[i] < -1.75f) {
+            pad.motion = static_cast<PadMotion>(i + 3);
+            pad.motion_value = acc[i];
+            pad_queue[client].Push(pad);
+        }
+    }
+}
+
+void Client::BeginConfiguration() {
+    for (auto& pq : pad_queue) {
+        pq.Clear();
+    }
+    configuring = true;
+}
+
+void Client::EndConfiguration() {
+    for (auto& pq : pad_queue) {
+        pq.Clear();
+    }
+    configuring = false;
+}
+
+DeviceStatus& Client::GetPadState(std::size_t pad) {
+    return clients[pad].status;
+}
+
+const DeviceStatus& Client::GetPadState(std::size_t pad) const {
+    return clients[pad].status;
+}
+
+std::array<Common::SPSCQueue<UDPPadStatus>, 4>& Client::GetPadQueue() {
+    return pad_queue;
+}
+
+const std::array<Common::SPSCQueue<UDPPadStatus>, 4>& Client::GetPadQueue() const {
+    return pad_queue;
+}
+
+void TestCommunication(const std::string& host, u16 port, std::size_t pad_index, u32 client_id,
+                       const std::function<void()>& success_callback,
+                       const std::function<void()>& failure_callback) {
     std::thread([=] {
         Common::Event success_event;
-        SocketCallback callback{[](Response::Version version) {}, [](Response::PortInfo info) {},
-                                [&](Response::PadData data) { success_event.Set(); }};
+        SocketCallback callback{
+            .version = [](Response::Version) {},
+            .port_info = [](Response::PortInfo) {},
+            .pad_data = [&](Response::PadData) { success_event.Set(); },
+        };
         Socket socket{host, port, pad_index, client_id, std::move(callback)};
         std::thread worker_thread{SocketLoop, &socket};
-        bool result = success_event.WaitFor(std::chrono::seconds(8));
+        const bool result = success_event.WaitFor(std::chrono::seconds(8));
         socket.Stop();
         worker_thread.join();
         if (result) {
@@ -225,16 +352,15 @@ void TestCommunication(const std::string& host, u16 port, u8 pad_index, u32 clie
         } else {
             failure_callback();
         }
-    })
-        .detach();
+    }).detach();
 }
 
 CalibrationConfigurationJob::CalibrationConfigurationJob(
-    const std::string& host, u16 port, u8 pad_index, u32 client_id,
+    const std::string& host, u16 port, std::size_t pad_index, u32 client_id,
     std::function<void(Status)> status_callback,
     std::function<void(u16, u16, u16, u16)> data_callback) {
 
-    std::thread([=] {
+    std::thread([=, this] {
         constexpr u16 CALIBRATION_THRESHOLD = 100;
 
         u16 min_x{UINT16_MAX};
@@ -250,7 +376,7 @@ CalibrationConfigurationJob::CalibrationConfigurationJob(
                                         current_status = Status::Ready;
                                         status_callback(current_status);
                                     }
-                                    if (!data.touch_1.is_active) {
+                                    if (data.touch_1.is_active == 0) {
                                         return;
                                     }
                                     LOG_DEBUG(Input, "Current touch: {} {}", data.touch_1.x,
@@ -280,8 +406,7 @@ CalibrationConfigurationJob::CalibrationConfigurationJob(
         complete_event.Wait();
         socket.Stop();
         worker_thread.join();
-    })
-        .detach();
+    }).detach();
 }
 
 CalibrationConfigurationJob::~CalibrationConfigurationJob() {

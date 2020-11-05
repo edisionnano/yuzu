@@ -23,7 +23,7 @@ namespace Service::LDR {
 
 constexpr ResultCode ERROR_INSUFFICIENT_ADDRESS_SPACE{ErrorModule::RO, 2};
 
-constexpr ResultCode ERROR_INVALID_MEMORY_STATE{ErrorModule::Loader, 51};
+[[maybe_unused]] constexpr ResultCode ERROR_INVALID_MEMORY_STATE{ErrorModule::Loader, 51};
 constexpr ResultCode ERROR_INVALID_NRO{ErrorModule::Loader, 52};
 constexpr ResultCode ERROR_INVALID_NRR{ErrorModule::Loader, 53};
 constexpr ResultCode ERROR_MISSING_NRR_HASH{ErrorModule::Loader, 54};
@@ -33,7 +33,7 @@ constexpr ResultCode ERROR_ALREADY_LOADED{ErrorModule::Loader, 57};
 constexpr ResultCode ERROR_INVALID_ALIGNMENT{ErrorModule::Loader, 81};
 constexpr ResultCode ERROR_INVALID_SIZE{ErrorModule::Loader, 82};
 constexpr ResultCode ERROR_INVALID_NRO_ADDRESS{ErrorModule::Loader, 84};
-constexpr ResultCode ERROR_INVALID_NRR_ADDRESS{ErrorModule::Loader, 85};
+[[maybe_unused]] constexpr ResultCode ERROR_INVALID_NRR_ADDRESS{ErrorModule::Loader, 85};
 constexpr ResultCode ERROR_NOT_INITIALIZED{ErrorModule::Loader, 87};
 
 constexpr std::size_t MAXIMUM_LOADED_RO{0x40};
@@ -166,7 +166,7 @@ public:
             {0, &RelocatableObject::LoadNro, "LoadNro"},
             {1, &RelocatableObject::UnloadNro, "UnloadNro"},
             {2, &RelocatableObject::LoadNrr, "LoadNrr"},
-            {3, nullptr, "UnloadNrr"},
+            {3, &RelocatableObject::UnloadNrr, "UnloadNrr"},
             {4, &RelocatableObject::Initialize, "Initialize"},
             {10, nullptr, "LoadNrrEx"},
         };
@@ -272,6 +272,20 @@ public:
         rb.Push(RESULT_SUCCESS);
     }
 
+    void UnloadNrr(Kernel::HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto pid = rp.Pop<u64>();
+        const auto nrr_address = rp.Pop<VAddr>();
+
+        LOG_DEBUG(Service_LDR, "called with pid={}, nrr_address={:016X}", pid, nrr_address);
+
+        nrr.erase(nrr_address);
+
+        IPC::ResponseBuilder rb{ctx, 2};
+
+        rb.Push(RESULT_SUCCESS);
+    }
+
     bool ValidateRegionForMap(Kernel::Memory::PageTable& page_table, VAddr start,
                               std::size_t size) const {
         constexpr std::size_t padding_size{4 * Kernel::Memory::PageSize};
@@ -310,7 +324,7 @@ public:
 
     ResultVal<VAddr> MapProcessCodeMemory(Kernel::Process* process, VAddr baseAddress,
                                           u64 size) const {
-        for (int retry{}; retry < MAXIMUM_MAP_RETRIES; retry++) {
+        for (std::size_t retry = 0; retry < MAXIMUM_MAP_RETRIES; retry++) {
             auto& page_table{process->PageTable()};
             const VAddr addr{GetRandomMapRegion(page_table, size)};
             const ResultCode result{page_table.MapProcessCodeMemory(addr, baseAddress, size)};
@@ -331,8 +345,7 @@ public:
 
     ResultVal<VAddr> MapNro(Kernel::Process* process, VAddr nro_addr, std::size_t nro_size,
                             VAddr bss_addr, std::size_t bss_size, std::size_t size) const {
-
-        for (int retry{}; retry < MAXIMUM_MAP_RETRIES; retry++) {
+        for (std::size_t retry = 0; retry < MAXIMUM_MAP_RETRIES; retry++) {
             auto& page_table{process->PageTable()};
             VAddr addr{};
 

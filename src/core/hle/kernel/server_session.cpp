@@ -8,7 +8,6 @@
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "common/logging/log.h"
-#include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/ipc_helpers.h"
 #include "core/hle/kernel/client_port.h"
@@ -33,8 +32,10 @@ ResultVal<std::shared_ptr<ServerSession>> ServerSession::Create(KernelCore& kern
                                                                 std::string name) {
     std::shared_ptr<ServerSession> session{std::make_shared<ServerSession>(kernel)};
 
-    session->request_event = Core::Timing::CreateEvent(
-        name, [session](u64 userdata, s64 cycles_late) { session->CompleteSyncRequest(); });
+    session->request_event =
+        Core::Timing::CreateEvent(name, [session](std::uintptr_t, std::chrono::nanoseconds) {
+            session->CompleteSyncRequest();
+        });
     session->name = std::move(name);
     session->parent = std::move(parent);
 
@@ -183,10 +184,11 @@ ResultCode ServerSession::CompleteSyncRequest() {
 }
 
 ResultCode ServerSession::HandleSyncRequest(std::shared_ptr<Thread> thread,
-                                            Core::Memory::Memory& memory) {
-    ResultCode result = QueueSyncRequest(std::move(thread), memory);
-    const u64 delay = kernel.IsMulticore() ? 0U : 20000U;
-    Core::System::GetInstance().CoreTiming().ScheduleEvent(delay, request_event, {});
+                                            Core::Memory::Memory& memory,
+                                            Core::Timing::CoreTiming& core_timing) {
+    const ResultCode result = QueueSyncRequest(std::move(thread), memory);
+    const auto delay = std::chrono::nanoseconds{kernel.IsMulticore() ? 0 : 20000};
+    core_timing.ScheduleEvent(delay, request_event, {});
     return result;
 }
 

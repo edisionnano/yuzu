@@ -33,10 +33,11 @@
 #include "video_core/renderer_opengl/gl_state_tracker.h"
 #include "video_core/renderer_opengl/gl_texture_cache.h"
 #include "video_core/renderer_opengl/utils.h"
+#include "video_core/shader/async_shaders.h"
 #include "video_core/textures/texture.h"
 
-namespace Core {
-class System;
+namespace Core::Memory {
+class Memory;
 }
 
 namespace Core::Frontend {
@@ -52,11 +53,19 @@ namespace OpenGL {
 struct ScreenInfo;
 struct DrawParameters;
 
+struct BindlessSSBO {
+    GLuint64EXT address;
+    GLsizei length;
+    GLsizei padding;
+};
+static_assert(sizeof(BindlessSSBO) * CHAR_BIT == 128);
+
 class RasterizerOpenGL : public VideoCore::RasterizerAccelerated {
 public:
-    explicit RasterizerOpenGL(Core::System& system, Core::Frontend::EmuWindow& emu_window,
-                              const Device& device, ScreenInfo& info,
-                              ProgramManager& program_manager, StateTracker& state_tracker);
+    explicit RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu,
+                              Core::Memory::Memory& cpu_memory, const Device& device,
+                              ScreenInfo& screen_info, ProgramManager& program_manager,
+                              StateTracker& state_tracker);
     ~RasterizerOpenGL() override;
 
     void Draw(bool is_indexed, bool is_instanced) override;
@@ -82,13 +91,20 @@ public:
                                const Tegra::Engines::Fermi2D::Config& copy_config) override;
     bool AccelerateDisplay(const Tegra::FramebufferConfig& config, VAddr framebuffer_addr,
                            u32 pixel_stride) override;
-    void LoadDiskResources(const std::atomic_bool& stop_loading,
+    void LoadDiskResources(u64 title_id, const std::atomic_bool& stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback) override;
-    void SetupDirtyFlags() override;
 
     /// Returns true when there are commands queued to the OpenGL server.
     bool AnyCommandQueued() const {
         return num_queued_commands > 0;
+    }
+
+    VideoCommon::Shader::AsyncShaders& GetAsyncShaders() {
+        return async_shaders;
+    }
+
+    const VideoCommon::Shader::AsyncShaders& GetAsyncShaders() const {
+        return async_shaders;
     }
 
 private:
@@ -115,9 +131,9 @@ private:
     /// Configures the current global memory entries to use for the kernel invocation.
     void SetupComputeGlobalMemory(Shader* kernel);
 
-    /// Configures a constant buffer.
+    /// Configures a global memory buffer.
     void SetupGlobalMemory(u32 binding, const GlobalMemoryEntry& entry, GPUVAddr gpu_addr,
-                           std::size_t size);
+                           size_t size, BindlessSSBO* ssbo);
 
     /// Configures the current textures to use for the draw command.
     void SetupDrawTextures(std::size_t stage_index, Shader* shader);
@@ -228,7 +244,15 @@ private:
 
     void SetupShaders(GLenum primitive_mode);
 
+    Tegra::GPU& gpu;
+    Tegra::Engines::Maxwell3D& maxwell3d;
+    Tegra::Engines::KeplerCompute& kepler_compute;
+    Tegra::MemoryManager& gpu_memory;
+
     const Device& device;
+    ScreenInfo& screen_info;
+    ProgramManager& program_manager;
+    StateTracker& state_tracker;
 
     TextureCacheOpenGL texture_cache;
     ShaderCacheOpenGL shader_cache;
@@ -238,10 +262,7 @@ private:
     OGLBufferCache buffer_cache;
     FenceManagerOpenGL fence_manager;
 
-    Core::System& system;
-    ScreenInfo& screen_info;
-    ProgramManager& program_manager;
-    StateTracker& state_tracker;
+    VideoCommon::Shader::AsyncShaders async_shaders;
 
     static constexpr std::size_t STREAM_BUFFER_SIZE = 128 * 1024 * 1024;
 

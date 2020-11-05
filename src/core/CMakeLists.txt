@@ -1,9 +1,3 @@
-if (YUZU_ENABLE_BOXCAT)
-    set(BCAT_BOXCAT_ADDITIONAL_SOURCES hle/service/bcat/backend/boxcat.cpp hle/service/bcat/backend/boxcat.h)
-else()
-    set(BCAT_BOXCAT_ADDITIONAL_SOURCES)
-endif()
-
 add_library(core STATIC
     arm/arm_interface.h
     arm/arm_interface.cpp
@@ -126,6 +120,8 @@ add_library(core STATIC
     file_sys/vfs_vector.h
     file_sys/xts_archive.cpp
     file_sys/xts_archive.h
+    frontend/applets/controller.cpp
+    frontend/applets/controller.h
     frontend/applets/error.cpp
     frontend/applets/error.h
     frontend/applets/general_frontend.cpp
@@ -185,6 +181,7 @@ add_library(core STATIC
     hle/kernel/object.h
     hle/kernel/physical_core.cpp
     hle/kernel/physical_core.h
+    hle/kernel/physical_memory.h
     hle/kernel/process.cpp
     hle/kernel/process.h
     hle/kernel/process_capability.cpp
@@ -243,6 +240,8 @@ add_library(core STATIC
     hle/service/am/applet_oe.h
     hle/service/am/applets/applets.cpp
     hle/service/am/applets/applets.h
+    hle/service/am/applets/controller.cpp
+    hle/service/am/applets/controller.h
     hle/service/am/applets/error.cpp
     hle/service/am/applets/error.h
     hle/service/am/applets/general_backend.cpp
@@ -298,7 +297,6 @@ add_library(core STATIC
     hle/service/audio/hwopus.h
     hle/service/bcat/backend/backend.cpp
     hle/service/bcat/backend/backend.h
-    ${BCAT_BOXCAT_ADDITIONAL_SOURCES}
     hle/service/bcat/bcat.cpp
     hle/service/bcat/bcat.h
     hle/service/bcat/module.cpp
@@ -398,10 +396,13 @@ add_library(core STATIC
     hle/service/lm/manager.h
     hle/service/mig/mig.cpp
     hle/service/mig/mig.h
+    hle/service/mii/manager.cpp
+    hle/service/mii/manager.h
     hle/service/mii/mii.cpp
     hle/service/mii/mii.h
-    hle/service/mii/mii_manager.cpp
-    hle/service/mii/mii_manager.h
+    hle/service/mii/raw_data.cpp
+    hle/service/mii/raw_data.h
+    hle/service/mii/types.h
     hle/service/mm/mm_u.cpp
     hle/service/mm/mm_u.h
     hle/service/ncm/ncm.cpp
@@ -438,6 +439,8 @@ add_library(core STATIC
     hle/service/nvdrv/devices/nvhost_gpu.h
     hle/service/nvdrv/devices/nvhost_nvdec.cpp
     hle/service/nvdrv/devices/nvhost_nvdec.h
+    hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
+    hle/service/nvdrv/devices/nvhost_nvdec_common.h
     hle/service/nvdrv/devices/nvhost_nvjpg.cpp
     hle/service/nvdrv/devices/nvhost_nvjpg.h
     hle/service/nvdrv/devices/nvhost_vic.cpp
@@ -451,6 +454,8 @@ add_library(core STATIC
     hle/service/nvdrv/nvdrv.h
     hle/service/nvdrv/nvmemp.cpp
     hle/service/nvdrv/nvmemp.h
+    hle/service/nvdrv/syncpoint_manager.cpp
+    hle/service/nvdrv/syncpoint_manager.h
     hle/service/nvflinger/buffer_queue.cpp
     hle/service/nvflinger/buffer_queue.h
     hle/service/nvflinger/nvflinger.cpp
@@ -487,6 +492,7 @@ add_library(core STATIC
     hle/service/sm/controller.h
     hle/service/sm/sm.cpp
     hle/service/sm/sm.h
+    hle/service/sockets/blocking_worker.h
     hle/service/sockets/bsd.cpp
     hle/service/sockets/bsd.h
     hle/service/sockets/ethc.cpp
@@ -497,6 +503,8 @@ add_library(core STATIC
     hle/service/sockets/sfdnsres.h
     hle/service/sockets/sockets.cpp
     hle/service/sockets/sockets.h
+    hle/service/sockets/sockets_translate.cpp
+    hle/service/sockets/sockets_translate.h
     hle/service/spl/csrng.cpp
     hle/service/spl/csrng.h
     hle/service/spl/module.cpp
@@ -582,6 +590,9 @@ add_library(core STATIC
     memory/dmnt_cheat_vm.h
     memory.cpp
     memory.h
+    network/network.cpp
+    network/network.h
+    network/sockets.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp
@@ -593,6 +604,13 @@ add_library(core STATIC
     tools/freezer.cpp
     tools/freezer.h
 )
+
+if (YUZU_ENABLE_BOXCAT)
+    target_sources(core PRIVATE
+        hle/service/bcat/backend/boxcat.cpp
+        hle/service/bcat/backend/boxcat.h
+    )
+endif()
 
 if (MSVC)
     target_compile_options(core PRIVATE
@@ -608,6 +626,20 @@ if (MSVC)
         /we4267
         # 'context' : truncation from 'type1' to 'type2'
         /we4305
+    )
+else()
+    target_compile_options(core PRIVATE
+        -Werror=conversion
+        -Werror=ignored-qualifiers
+        -Werror=implicit-fallthrough
+        -Werror=reorder
+        -Werror=sign-compare
+        -Werror=unused-variable
+
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=unused-but-set-parameter>
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=unused-but-set-variable>
+
+        -Wno-sign-conversion
     )
 endif()
 

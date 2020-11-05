@@ -12,7 +12,6 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/core_timing.h"
-#include "core/core_timing_util.h"
 #include "core/settings.h"
 
 namespace AudioCore {
@@ -36,9 +35,10 @@ Stream::Stream(Core::Timing::CoreTiming& core_timing, u32 sample_rate, Format fo
                ReleaseCallback&& release_callback, SinkStream& sink_stream, std::string&& name_)
     : sample_rate{sample_rate}, format{format}, release_callback{std::move(release_callback)},
       sink_stream{sink_stream}, core_timing{core_timing}, name{std::move(name_)} {
-
-    release_event = Core::Timing::CreateEvent(
-        name, [this](u64 userdata, s64 cycles_late) { ReleaseActiveBuffer(cycles_late); });
+    release_event =
+        Core::Timing::CreateEvent(name, [this](std::uintptr_t, std::chrono::nanoseconds ns_late) {
+            ReleaseActiveBuffer(ns_late);
+        });
 }
 
 void Stream::Play() {
@@ -59,11 +59,9 @@ Stream::State Stream::GetState() const {
     return state;
 }
 
-s64 Stream::GetBufferReleaseNS(const Buffer& buffer) const {
+std::chrono::nanoseconds Stream::GetBufferReleaseNS(const Buffer& buffer) const {
     const std::size_t num_samples{buffer.GetSamples().size() / GetNumChannels()};
-    const auto ns =
-        std::chrono::nanoseconds((static_cast<u64>(num_samples) * 1000000000ULL) / sample_rate);
-    return ns.count();
+    return std::chrono::nanoseconds((static_cast<u64>(num_samples) * 1000000000ULL) / sample_rate);
 }
 
 static void VolumeAdjustSamples(std::vector<s16>& samples, float game_volume) {
@@ -80,7 +78,7 @@ static void VolumeAdjustSamples(std::vector<s16>& samples, float game_volume) {
     }
 }
 
-void Stream::PlayNextBuffer(s64 cycles_late) {
+void Stream::PlayNextBuffer(std::chrono::nanoseconds ns_late) {
     if (!IsPlaying()) {
         // Ensure we are in playing state before playing the next buffer
         sink_stream.Flush();
@@ -105,17 +103,14 @@ void Stream::PlayNextBuffer(s64 cycles_late) {
 
     sink_stream.EnqueueSamples(GetNumChannels(), active_buffer->GetSamples());
 
-    core_timing.ScheduleEvent(
-        GetBufferReleaseNS(*active_buffer) -
-            (Settings::values.enable_audio_stretching.GetValue() ? 0 : cycles_late),
-        release_event, {});
+    core_timing.ScheduleEvent(GetBufferReleaseNS(*active_buffer) - ns_late, release_event, {});
 }
 
-void Stream::ReleaseActiveBuffer(s64 cycles_late) {
+void Stream::ReleaseActiveBuffer(std::chrono::nanoseconds ns_late) {
     ASSERT(active_buffer);
     released_buffers.push(std::move(active_buffer));
     release_callback();
-    PlayNextBuffer(cycles_late);
+    PlayNextBuffer(ns_late);
 }
 
 bool Stream::QueueBuffer(BufferPtr&& buffer) {

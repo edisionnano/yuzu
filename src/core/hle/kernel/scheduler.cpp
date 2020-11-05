@@ -72,7 +72,7 @@ u32 GlobalScheduler::SelectThreads() {
         if (top_thread != nullptr) {
             // TODO(Blinkhawk): Implement Thread Pinning
         } else {
-            idle_cores |= (1ul << core);
+            idle_cores |= (1U << core);
         }
         top_threads[core] = top_thread;
     }
@@ -126,14 +126,15 @@ u32 GlobalScheduler::SelectThreads() {
             top_threads[core_id] = suggested;
         }
 
-        idle_cores &= ~(1ul << core_id);
+        idle_cores &= ~(1U << core_id);
     }
     u32 cores_needing_context_switch{};
     for (u32 core = 0; core < Core::Hardware::NUM_CPU_CORES; core++) {
         Scheduler& sched = kernel.Scheduler(core);
-        ASSERT(top_threads[core] == nullptr || top_threads[core]->GetProcessorID() == core);
+        ASSERT(top_threads[core] == nullptr ||
+               static_cast<u32>(top_threads[core]->GetProcessorID()) == core);
         if (update_thread(top_threads[core], sched)) {
-            cores_needing_context_switch |= (1ul << core);
+            cores_needing_context_switch |= (1U << core);
         }
     }
     return cores_needing_context_switch;
@@ -363,7 +364,7 @@ void GlobalScheduler::EnableInterruptAndSchedule(u32 cores_pending_reschedule,
         } else {
             must_context_switch = true;
         }
-        cores_pending_reschedule &= ~(1ul << core);
+        cores_pending_reschedule &= ~(1U << core);
     }
     if (must_context_switch) {
         auto& core_scheduler = kernel.CurrentScheduler();
@@ -663,32 +664,26 @@ void Scheduler::Reload() {
 }
 
 void Scheduler::SwitchContextStep2() {
-    Thread* previous_thread = current_thread_prev.get();
-    Thread* new_thread = selected_thread.get();
-
     // Load context of new thread
-    Process* const previous_process =
-        previous_thread != nullptr ? previous_thread->GetOwnerProcess() : nullptr;
-
-    if (new_thread) {
-        ASSERT_MSG(new_thread->GetSchedulingStatus() == ThreadSchedStatus::Runnable,
+    if (selected_thread) {
+        ASSERT_MSG(selected_thread->GetSchedulingStatus() == ThreadSchedStatus::Runnable,
                    "Thread must be runnable.");
 
         // Cancel any outstanding wakeup events for this thread
-        new_thread->SetIsRunning(true);
-        new_thread->last_running_ticks = system.CoreTiming().GetCPUTicks();
-        new_thread->SetWasRunning(false);
+        selected_thread->SetIsRunning(true);
+        selected_thread->last_running_ticks = system.CoreTiming().GetCPUTicks();
+        selected_thread->SetWasRunning(false);
 
         auto* const thread_owner_process = current_thread->GetOwnerProcess();
         if (thread_owner_process != nullptr) {
             system.Kernel().MakeCurrentProcess(thread_owner_process);
         }
-        if (!new_thread->IsHLEThread()) {
-            Core::ARM_Interface& cpu_core = new_thread->ArmInterface();
-            cpu_core.LoadContext(new_thread->GetContext32());
-            cpu_core.LoadContext(new_thread->GetContext64());
-            cpu_core.SetTlsAddress(new_thread->GetTLSAddress());
-            cpu_core.SetTPIDR_EL0(new_thread->GetTPIDR_EL0());
+        if (!selected_thread->IsHLEThread()) {
+            Core::ARM_Interface& cpu_core = selected_thread->ArmInterface();
+            cpu_core.LoadContext(selected_thread->GetContext32());
+            cpu_core.LoadContext(selected_thread->GetContext64());
+            cpu_core.SetTlsAddress(selected_thread->GetTLSAddress());
+            cpu_core.SetTPIDR_EL0(selected_thread->GetTPIDR_EL0());
             cpu_core.ChangeProcessorID(this->core_id);
             cpu_core.ClearExclusiveState();
         }
@@ -761,14 +756,18 @@ void Scheduler::SwitchToCurrent() {
             current_thread = selected_thread;
             is_context_switch_pending = false;
         }
-        while (!is_context_switch_pending) {
+        const auto is_switch_pending = [this] {
+            std::scoped_lock lock{guard};
+            return is_context_switch_pending;
+        };
+        do {
             if (current_thread != nullptr && !current_thread->IsHLEThread()) {
                 current_thread->context_guard.lock();
                 if (!current_thread->IsRunnable()) {
                     current_thread->context_guard.unlock();
                     break;
                 }
-                if (current_thread->GetProcessorID() != core_id) {
+                if (static_cast<u32>(current_thread->GetProcessorID()) != core_id) {
                     current_thread->context_guard.unlock();
                     break;
                 }
@@ -780,7 +779,7 @@ void Scheduler::SwitchToCurrent() {
                 next_context = &idle_thread->GetHostContext();
             }
             Common::Fiber::YieldTo(switch_fiber, *next_context);
-        }
+        } while (!is_switch_pending());
     }
 }
 
@@ -802,7 +801,7 @@ void Scheduler::UpdateLastContextSwitchTime(Thread* thread, Process* process) {
 
 void Scheduler::Initialize() {
     std::string name = "Idle Thread Id:" + std::to_string(core_id);
-    std::function<void(void*)> init_func = system.GetCpuManager().GetIdleThreadStartFunc();
+    std::function<void(void*)> init_func = Core::CpuManager::GetIdleThreadStartFunc();
     void* init_func_parameter = system.GetCpuManager().GetStartFuncParamater();
     ThreadType type = static_cast<ThreadType>(THREADTYPE_KERNEL | THREADTYPE_HLE | THREADTYPE_IDLE);
     auto thread_res = Thread::Create(system, type, name, 0, 64, 0, static_cast<u32>(core_id), 0,

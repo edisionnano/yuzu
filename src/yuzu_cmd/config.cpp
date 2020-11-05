@@ -16,9 +16,11 @@
 #include "yuzu_cmd/config.h"
 #include "yuzu_cmd/default_ini.h"
 
+namespace FS = Common::FS;
+
 Config::Config() {
     // TODO: Don't hardcode the path; let the frontend decide where to put the config files.
-    sdl2_config_loc = FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) + "sdl2-config.ini";
+    sdl2_config_loc = FS::GetUserPath(FS::UserPath::ConfigDir) + "sdl2-config.ini";
     sdl2_config = std::make_unique<INIReader>(sdl2_config_loc);
 
     Reload();
@@ -31,8 +33,8 @@ bool Config::LoadINI(const std::string& default_contents, bool retry) {
     if (sdl2_config->ParseError() < 0) {
         if (retry) {
             LOG_WARNING(Config, "Failed to load {}. Creating file from defaults...", location);
-            FileUtil::CreateFullPath(location);
-            FileUtil::WriteStringToFile(true, location, default_contents);
+            FS::CreateFullPath(location);
+            FS::WriteStringToFile(true, location, default_contents);
             sdl2_config = std::make_unique<INIReader>(location); // Reopen file
 
             return LoadINI(default_contents, false);
@@ -286,6 +288,10 @@ void Config::ReadValues() {
             Settings::values.debug_pad_analogs[i] = default_param;
     }
 
+    Settings::values.vibration_enabled =
+        sdl2_config->GetBoolean("ControlsGeneral", "vibration_enabled", true);
+    Settings::values.motion_enabled =
+        sdl2_config->GetBoolean("ControlsGeneral", "motion_enabled", true);
     Settings::values.touchscreen.enabled =
         sdl2_config->GetBoolean("ControlsGeneral", "touch_enabled", true);
     Settings::values.touchscreen.device =
@@ -315,35 +321,26 @@ void Config::ReadValues() {
     // Data Storage
     Settings::values.use_virtual_sd =
         sdl2_config->GetBoolean("Data Storage", "use_virtual_sd", true);
-    FileUtil::GetUserPath(FileUtil::UserPath::NANDDir,
-                          sdl2_config->Get("Data Storage", "nand_directory",
-                                           FileUtil::GetUserPath(FileUtil::UserPath::NANDDir)));
-    FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir,
-                          sdl2_config->Get("Data Storage", "sdmc_directory",
-                                           FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir)));
-    FileUtil::GetUserPath(FileUtil::UserPath::LoadDir,
-                          sdl2_config->Get("Data Storage", "load_directory",
-                                           FileUtil::GetUserPath(FileUtil::UserPath::LoadDir)));
-    FileUtil::GetUserPath(FileUtil::UserPath::DumpDir,
-                          sdl2_config->Get("Data Storage", "dump_directory",
-                                           FileUtil::GetUserPath(FileUtil::UserPath::DumpDir)));
-    FileUtil::GetUserPath(FileUtil::UserPath::CacheDir,
-                          sdl2_config->Get("Data Storage", "cache_directory",
-                                           FileUtil::GetUserPath(FileUtil::UserPath::CacheDir)));
+    FS::GetUserPath(
+        FS::UserPath::NANDDir,
+        sdl2_config->Get("Data Storage", "nand_directory", FS::GetUserPath(FS::UserPath::NANDDir)));
+    FS::GetUserPath(
+        FS::UserPath::SDMCDir,
+        sdl2_config->Get("Data Storage", "sdmc_directory", FS::GetUserPath(FS::UserPath::SDMCDir)));
+    FS::GetUserPath(
+        FS::UserPath::LoadDir,
+        sdl2_config->Get("Data Storage", "load_directory", FS::GetUserPath(FS::UserPath::LoadDir)));
+    FS::GetUserPath(
+        FS::UserPath::DumpDir,
+        sdl2_config->Get("Data Storage", "dump_directory", FS::GetUserPath(FS::UserPath::DumpDir)));
+    FS::GetUserPath(FS::UserPath::CacheDir,
+                    sdl2_config->Get("Data Storage", "cache_directory",
+                                     FS::GetUserPath(FS::UserPath::CacheDir)));
     Settings::values.gamecard_inserted =
         sdl2_config->GetBoolean("Data Storage", "gamecard_inserted", false);
     Settings::values.gamecard_current_game =
         sdl2_config->GetBoolean("Data Storage", "gamecard_current_game", false);
     Settings::values.gamecard_path = sdl2_config->Get("Data Storage", "gamecard_path", "");
-    Settings::values.nand_total_size = static_cast<Settings::NANDTotalSize>(sdl2_config->GetInteger(
-        "Data Storage", "nand_total_size", static_cast<long>(Settings::NANDTotalSize::S29_1GB)));
-    Settings::values.nand_user_size = static_cast<Settings::NANDUserSize>(sdl2_config->GetInteger(
-        "Data Storage", "nand_user_size", static_cast<long>(Settings::NANDUserSize::S26GB)));
-    Settings::values.nand_system_size = static_cast<Settings::NANDSystemSize>(
-        sdl2_config->GetInteger("Data Storage", "nand_system_size",
-                                static_cast<long>(Settings::NANDSystemSize::S2_5GB)));
-    Settings::values.sdmc_size = static_cast<Settings::SDMCSize>(sdl2_config->GetInteger(
-        "Data Storage", "sdmc_size", static_cast<long>(Settings::SDMCSize::S16GB)));
 
     // System
     Settings::values.use_docked_mode = sdl2_config->GetBoolean("System", "use_docked_mode", false);
@@ -374,7 +371,7 @@ void Config::ReadValues() {
 
     // Core
     Settings::values.use_multi_core.SetValue(
-        sdl2_config->GetBoolean("Core", "use_multi_core", false));
+        sdl2_config->GetBoolean("Core", "use_multi_core", true));
 
     // Renderer
     const int renderer_backend = sdl2_config->GetInteger(
@@ -398,11 +395,15 @@ void Config::ReadValues() {
     const int gpu_accuracy_level = sdl2_config->GetInteger("Renderer", "gpu_accuracy", 0);
     Settings::values.gpu_accuracy.SetValue(static_cast<Settings::GPUAccuracy>(gpu_accuracy_level));
     Settings::values.use_asynchronous_gpu_emulation.SetValue(
-        sdl2_config->GetBoolean("Renderer", "use_asynchronous_gpu_emulation", false));
+        sdl2_config->GetBoolean("Renderer", "use_asynchronous_gpu_emulation", true));
     Settings::values.use_vsync.SetValue(
         static_cast<u16>(sdl2_config->GetInteger("Renderer", "use_vsync", 1)));
     Settings::values.use_assembly_shaders.SetValue(
-        sdl2_config->GetBoolean("Renderer", "use_assembly_shaders", false));
+        sdl2_config->GetBoolean("Renderer", "use_assembly_shaders", true));
+    Settings::values.use_asynchronous_shaders.SetValue(
+        sdl2_config->GetBoolean("Renderer", "use_asynchronous_shaders", false));
+    Settings::values.use_asynchronous_shaders.SetValue(
+        sdl2_config->GetBoolean("Renderer", "use_asynchronous_shaders", false));
     Settings::values.use_fast_gpu_time.SetValue(
         sdl2_config->GetBoolean("Renderer", "use_fast_gpu_time", true));
 
@@ -437,8 +438,6 @@ void Config::ReadValues() {
     Settings::values.reporting_services =
         sdl2_config->GetBoolean("Debugging", "reporting_services", false);
     Settings::values.quest_flag = sdl2_config->GetBoolean("Debugging", "quest_flag", false);
-    Settings::values.disable_cpu_opt =
-        sdl2_config->GetBoolean("Debugging", "disable_cpu_opt", false);
     Settings::values.disable_macro_jit =
         sdl2_config->GetBoolean("Debugging", "disable_macro_jit", false);
 

@@ -6,6 +6,7 @@
 #include <list>
 #include <mutex>
 #include <utility>
+#include "common/assert.h"
 #include "common/threadsafe_queue.h"
 #include "input_common/gcadapter/gc_adapter.h"
 #include "input_common/gcadapter/gc_poller.h"
@@ -14,50 +15,59 @@ namespace InputCommon {
 
 class GCButton final : public Input::ButtonDevice {
 public:
-    explicit GCButton(int port_, int button_, GCAdapter::Adapter* adapter)
+    explicit GCButton(u32 port_, s32 button_, GCAdapter::Adapter* adapter)
         : port(port_), button(button_), gcadapter(adapter) {}
 
     ~GCButton() override;
 
     bool GetStatus() const override {
-        return gcadapter->GetPadState()[port].buttons.at(button);
+        if (gcadapter->DeviceConnected(port)) {
+            return (gcadapter->GetPadState(port).buttons & button) != 0;
+        }
+        return false;
+    }
+
+    bool SetRumblePlay(f32 amp_high, f32 amp_low, f32 freq_high, f32 freq_low) const override {
+        const float amplitude = amp_high + amp_low > 2.0f ? 1.0f : (amp_high + amp_low) * 0.5f;
+        const auto new_amp =
+            static_cast<f32>(pow(amplitude, 0.5f) * (3.0f - 2.0f * pow(amplitude, 0.15f)));
+
+        return gcadapter->RumblePlay(port, new_amp);
     }
 
 private:
-    const int port;
-    const int button;
+    const u32 port;
+    const s32 button;
     GCAdapter::Adapter* gcadapter;
 };
 
 class GCAxisButton final : public Input::ButtonDevice {
 public:
-    explicit GCAxisButton(int port_, int axis_, float threshold_, bool trigger_if_greater_,
-                          GCAdapter::Adapter* adapter)
+    explicit GCAxisButton(u32 port_, u32 axis_, float threshold_, bool trigger_if_greater_,
+                          const GCAdapter::Adapter* adapter)
         : port(port_), axis(axis_), threshold(threshold_), trigger_if_greater(trigger_if_greater_),
-          gcadapter(adapter) {
-        // L/R triggers range is only in positive direction beginning near 0
-        // 0.0 threshold equates to near half trigger press, but threshold accounts for variability.
-        if (axis > 3) {
-            threshold *= -0.5;
-        }
-    }
+          gcadapter(adapter) {}
 
     bool GetStatus() const override {
-        const float axis_value = (gcadapter->GetPadState()[port].axes.at(axis) - 128.0f) / 128.0f;
-        if (trigger_if_greater) {
-            // TODO: Might be worthwile to set a slider for the trigger threshold. It is currently
-            // always set to 0.5 in configure_input_player.cpp ZL/ZR HandleClick
-            return axis_value > threshold;
+        if (gcadapter->DeviceConnected(port)) {
+            const float current_axis_value = gcadapter->GetPadState(port).axis_values.at(axis);
+            const float axis_value = current_axis_value / 128.0f;
+            if (trigger_if_greater) {
+                // TODO: Might be worthwile to set a slider for the trigger threshold. It is
+                // currently always set to 0.5 in configure_input_player.cpp ZL/ZR HandleClick
+                return axis_value > threshold;
+            }
+            return axis_value < -threshold;
         }
-        return axis_value < -threshold;
+        return false;
     }
 
 private:
-    const int port;
-    const int axis;
+    const u32 port;
+    const u32 axis;
     float threshold;
     bool trigger_if_greater;
-    GCAdapter::Adapter* gcadapter;
+    const GCAdapter::Adapter* gcadapter;
 };
 
 GCButtonFactory::GCButtonFactory(std::shared_ptr<GCAdapter::Adapter> adapter_)
@@ -66,15 +76,14 @@ GCButtonFactory::GCButtonFactory(std::shared_ptr<GCAdapter::Adapter> adapter_)
 GCButton::~GCButton() = default;
 
 std::unique_ptr<Input::ButtonDevice> GCButtonFactory::Create(const Common::ParamPackage& params) {
-    const int button_id = params.Get("button", 0);
-    const int port = params.Get("port", 0);
+    const auto button_id = params.Get("button", 0);
+    const auto port = static_cast<u32>(params.Get("port", 0));
 
-    constexpr int PAD_STICK_ID = static_cast<u16>(GCAdapter::PadButton::PAD_STICK);
+    constexpr s32 PAD_STICK_ID = static_cast<s32>(GCAdapter::PadButton::Stick);
 
     // button is not an axis/stick button
     if (button_id != PAD_STICK_ID) {
-        auto button = std::make_unique<GCButton>(port, button_id, adapter.get());
-        return std::move(button);
+        return std::make_unique<GCButton>(port, button_id, adapter.get());
     }
 
     // For Axis buttons, used by the binary sticks.
@@ -94,38 +103,34 @@ std::unique_ptr<Input::ButtonDevice> GCButtonFactory::Create(const Common::Param
         return std::make_unique<GCAxisButton>(port, axis, threshold, trigger_if_greater,
                                               adapter.get());
     }
+
+    UNREACHABLE();
+    return nullptr;
 }
 
-Common::ParamPackage GCButtonFactory::GetNextInput() {
+Common::ParamPackage GCButtonFactory::GetNextInput() const {
     Common::ParamPackage params;
     GCAdapter::GCPadStatus pad;
     auto& queue = adapter->GetPadQueue();
-    for (std::size_t port = 0; port < queue.size(); ++port) {
-        while (queue[port].Pop(pad)) {
-            // This while loop will break on the earliest detected button
-            params.Set("engine", "gcpad");
-            params.Set("port", static_cast<int>(port));
-            for (const auto& button : GCAdapter::PadButtonArray) {
-                const u16 button_value = static_cast<u16>(button);
-                if (pad.button & button_value) {
-                    params.Set("button", button_value);
-                    break;
-                }
-            }
+    while (queue.Pop(pad)) {
+        // This while loop will break on the earliest detected button
+        params.Set("engine", "gcpad");
+        params.Set("port", static_cast<s32>(pad.port));
+        if (pad.button != GCAdapter::PadButton::Undefined) {
+            params.Set("button", static_cast<u16>(pad.button));
+        }
 
-            // For Axis button implementation
-            if (pad.axis != GCAdapter::PadAxes::Undefined) {
-                params.Set("axis", static_cast<u8>(pad.axis));
-                params.Set("button", static_cast<u16>(GCAdapter::PadButton::PAD_STICK));
-                if (pad.axis_value > 128) {
-                    params.Set("direction", "+");
-                    params.Set("threshold", "0.25");
-                } else {
-                    params.Set("direction", "-");
-                    params.Set("threshold", "-0.25");
-                }
-                break;
+        // For Axis button implementation
+        if (pad.axis != GCAdapter::PadAxes::Undefined) {
+            params.Set("axis", static_cast<u8>(pad.axis));
+            params.Set("button", static_cast<u16>(GCAdapter::PadButton::Stick));
+            params.Set("threshold", "0.25");
+            if (pad.axis_value > 0) {
+                params.Set("direction", "+");
+            } else {
+                params.Set("direction", "-");
             }
+            break;
         }
     }
     return params;
@@ -143,20 +148,24 @@ void GCButtonFactory::EndConfiguration() {
 
 class GCAnalog final : public Input::AnalogDevice {
 public:
-    GCAnalog(int port_, int axis_x_, int axis_y_, float deadzone_, GCAdapter::Adapter* adapter)
-        : port(port_), axis_x(axis_x_), axis_y(axis_y_), deadzone(deadzone_), gcadapter(adapter) {}
+    explicit GCAnalog(u32 port_, u32 axis_x_, u32 axis_y_, float deadzone_,
+                      const GCAdapter::Adapter* adapter, float range_)
+        : port(port_), axis_x(axis_x_), axis_y(axis_y_), deadzone(deadzone_), gcadapter(adapter),
+          range(range_) {}
 
-    float GetAxis(int axis) const {
-        std::lock_guard lock{mutex};
-        // division is not by a perfect 128 to account for some variance in center location
-        // e.g. my device idled at 131 in X, 120 in Y, and full range of motion was in range
-        // [20-230]
-        return (gcadapter->GetPadState()[port].axes.at(axis) - 128.0f) / 95.0f;
+    float GetAxis(u32 axis) const {
+        if (gcadapter->DeviceConnected(port)) {
+            std::lock_guard lock{mutex};
+            const auto axis_value =
+                static_cast<float>(gcadapter->GetPadState(port).axis_values.at(axis));
+            return (axis_value) / (100.0f * range);
+        }
+        return 0.0f;
     }
 
-    std::pair<float, float> GetAnalog(int axis_x, int axis_y) const {
-        float x = GetAxis(axis_x);
-        float y = GetAxis(axis_y);
+    std::pair<float, float> GetAnalog(u32 analog_axis_x, u32 analog_axis_y) const {
+        float x = GetAxis(analog_axis_x);
+        float y = GetAxis(analog_axis_y);
 
         // Make sure the coordinates are in the unit circle,
         // otherwise normalize it.
@@ -182,7 +191,7 @@ public:
 
     bool GetAnalogDirectionStatus(Input::AnalogDirection direction) const override {
         const auto [x, y] = GetStatus();
-        const float directional_deadzone = 0.4f;
+        const float directional_deadzone = 0.5f;
         switch (direction) {
         case Input::AnalogDirection::RIGHT:
             return x > directional_deadzone;
@@ -197,12 +206,13 @@ public:
     }
 
 private:
-    const int port;
-    const int axis_x;
-    const int axis_y;
+    const u32 port;
+    const u32 axis_x;
+    const u32 axis_y;
     const float deadzone;
+    const GCAdapter::Adapter* gcadapter;
+    const float range;
     mutable std::mutex mutex;
-    GCAdapter::Adapter* gcadapter;
 };
 
 /// An analog device factory that creates analog devices from GC Adapter
@@ -217,12 +227,13 @@ GCAnalogFactory::GCAnalogFactory(std::shared_ptr<GCAdapter::Adapter> adapter_)
  *     - "axis_y": the index of the axis to be bind as y-axis
  */
 std::unique_ptr<Input::AnalogDevice> GCAnalogFactory::Create(const Common::ParamPackage& params) {
-    const int port = params.Get("port", 0);
-    const int axis_x = params.Get("axis_x", 0);
-    const int axis_y = params.Get("axis_y", 1);
-    const float deadzone = std::clamp(params.Get("deadzone", 0.0f), 0.0f, .99f);
+    const auto port = static_cast<u32>(params.Get("port", 0));
+    const auto axis_x = static_cast<u32>(params.Get("axis_x", 0));
+    const auto axis_y = static_cast<u32>(params.Get("axis_y", 1));
+    const auto deadzone = std::clamp(params.Get("deadzone", 0.0f), 0.0f, 1.0f);
+    const auto range = std::clamp(params.Get("range", 1.0f), 0.50f, 1.50f);
 
-    return std::make_unique<GCAnalog>(port, axis_x, axis_y, deadzone, adapter.get());
+    return std::make_unique<GCAnalog>(port, axis_x, axis_y, deadzone, adapter.get(), range);
 }
 
 void GCAnalogFactory::BeginConfiguration() {
@@ -237,25 +248,44 @@ void GCAnalogFactory::EndConfiguration() {
 
 Common::ParamPackage GCAnalogFactory::GetNextInput() {
     GCAdapter::GCPadStatus pad;
+    Common::ParamPackage params;
     auto& queue = adapter->GetPadQueue();
-    for (std::size_t port = 0; port < queue.size(); ++port) {
-        while (queue[port].Pop(pad)) {
-            if (pad.axis == GCAdapter::PadAxes::Undefined ||
-                std::abs((pad.axis_value - 128.0f) / 128.0f) < 0.1) {
-                continue;
-            }
-            // An analog device needs two axes, so we need to store the axis for later and wait for
-            // a second input event. The axes also must be from the same joystick.
-            const u8 axis = static_cast<u8>(pad.axis);
-            if (analog_x_axis == -1) {
-                analog_x_axis = axis;
-                controller_number = port;
-            } else if (analog_y_axis == -1 && analog_x_axis != axis && controller_number == port) {
-                analog_y_axis = axis;
-            }
+    while (queue.Pop(pad)) {
+        if (pad.button != GCAdapter::PadButton::Undefined) {
+            params.Set("engine", "gcpad");
+            params.Set("port", static_cast<s32>(pad.port));
+            params.Set("button", static_cast<u16>(pad.button));
+            return params;
+        }
+        if (pad.axis == GCAdapter::PadAxes::Undefined ||
+            std::abs(static_cast<float>(pad.axis_value) / 128.0f) < 0.1f) {
+            continue;
+        }
+        // An analog device needs two axes, so we need to store the axis for later and wait for
+        // a second input event. The axes also must be from the same joystick.
+        const u8 axis = static_cast<u8>(pad.axis);
+        if (axis == 0 || axis == 1) {
+            analog_x_axis = 0;
+            analog_y_axis = 1;
+            controller_number = static_cast<s32>(pad.port);
+            break;
+        }
+        if (axis == 2 || axis == 3) {
+            analog_x_axis = 2;
+            analog_y_axis = 3;
+            controller_number = static_cast<s32>(pad.port);
+            break;
+        }
+
+        if (analog_x_axis == -1) {
+            analog_x_axis = axis;
+            controller_number = static_cast<s32>(pad.port);
+        } else if (analog_y_axis == -1 && analog_x_axis != axis &&
+                   controller_number == static_cast<s32>(pad.port)) {
+            analog_y_axis = axis;
+            break;
         }
     }
-    Common::ParamPackage params;
     if (analog_x_axis != -1 && analog_y_axis != -1) {
         params.Set("engine", "gcpad");
         params.Set("port", controller_number);

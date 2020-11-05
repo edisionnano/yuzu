@@ -10,6 +10,7 @@
 
 #include <QMainWindow>
 #include <QTimer>
+#include <QTranslator>
 
 #include "common/common_types.h"
 #include "core/core.h"
@@ -28,13 +29,21 @@ class MicroProfileDialog;
 class ProfilerWidget;
 class QLabel;
 class QPushButton;
+class QProgressDialog;
 class WaitTreeWidget;
 enum class GameListOpenTarget;
+enum class GameListRemoveTarget;
+enum class InstalledEntryType;
 class GameListPlaceholder;
 
 namespace Core::Frontend {
+struct ControllerParameters;
 struct SoftwareKeyboardParameters;
 } // namespace Core::Frontend
+
+namespace DiscordRPC {
+class DiscordInterface;
+}
 
 namespace FileSys {
 class ContentProvider;
@@ -42,19 +51,25 @@ class ManualContentProvider;
 class VfsFilesystem;
 } // namespace FileSys
 
+namespace InputCommon {
+class InputSubsystem;
+}
+
 enum class EmulatedDirectoryTarget {
     NAND,
     SDMC,
+};
+
+enum class InstallResult {
+    Success,
+    Overwrite,
+    Failure,
 };
 
 enum class ReinitializeKeyBehavior {
     NoWarning,
     Warning,
 };
-
-namespace DiscordRPC {
-class DiscordInterface;
-}
 
 class GMainWindow : public QMainWindow {
     Q_OBJECT
@@ -75,8 +90,6 @@ public:
     void UpdateUITheme();
     GMainWindow();
     ~GMainWindow() override;
-
-    std::unique_ptr<DiscordRPC::DiscordInterface> discord_rpc;
 
     bool DropAction(QDropEvent* event);
     void AcceptDropEvent(QDropEvent* event);
@@ -102,9 +115,14 @@ signals:
     // Signal that tells widgets to update icons to use the current theme
     void UpdateThemedIcons();
 
+    void UpdateInstallProgress();
+
+    void ControllerSelectorReconfigureFinished();
+
     void ErrorDisplayFinished();
 
     void ProfileSelectorFinishedSelection(std::optional<Common::UUID> uuid);
+
     void SoftwareKeyboardFinishedText(std::optional<std::u16string> text);
     void SoftwareKeyboardFinishedCheckDialog();
 
@@ -113,6 +131,8 @@ signals:
 
 public slots:
     void OnLoadComplete();
+    void ControllerSelectorReconfigureControllers(
+        const Core::Frontend::ControllerParameters& parameters);
     void ErrorDisplayDisplayError(QString body);
     void ProfileSelectorSelectProfile();
     void SoftwareKeyboardGetText(const Core::Frontend::SoftwareKeyboardParameters& parameters);
@@ -186,8 +206,11 @@ private slots:
     void OnOpenFAQ();
     /// Called whenever a user selects a game in the game list widget.
     void OnGameListLoadFile(QString game_path);
-    void OnGameListOpenFolder(GameListOpenTarget target, const std::string& game_path);
+    void OnGameListOpenFolder(u64 program_id, GameListOpenTarget target,
+                              const std::string& game_path);
     void OnTransferableShaderCacheOpenFile(u64 program_id);
+    void OnGameListRemoveInstalledEntry(u64 program_id, InstalledEntryType type);
+    void OnGameListRemoveFile(u64 program_id, GameListRemoveTarget target);
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path);
     void OnGameListCopyTID(u64 program_id);
     void OnGameListNavigateToGamedbEntry(u64 program_id,
@@ -198,9 +221,11 @@ private slots:
     void OnGameListOpenPerGameProperties(const std::string& file);
     void OnMenuLoadFile();
     void OnMenuLoadFolder();
+    void IncrementInstallProgress();
     void OnMenuInstallToNAND();
     void OnMenuRecentFile();
     void OnConfigure();
+    void OnConfigurePerGame();
     void OnLoadAmiibo();
     void OnOpenYuzuFolder();
     void OnAbout();
@@ -215,9 +240,17 @@ private slots:
     void OnCaptureScreenshot();
     void OnCoreError(Core::System::ResultStatus, std::string);
     void OnReinitializeKeys(ReinitializeKeyBehavior behavior);
+    void OnLanguageChanged(const QString& locale);
 
 private:
+    void RemoveBaseContent(u64 program_id, const QString& entry_type);
+    void RemoveUpdateContent(u64 program_id, const QString& entry_type);
+    void RemoveAddOnContent(u64 program_id, const QString& entry_type);
+    void RemoveTransferableShaderCache(u64 program_id);
+    void RemoveCustomConfiguration(u64 program_id);
     std::optional<u64> SelectRomFSDumpTarget(const FileSys::ContentProvider&, u64 program_id);
+    InstallResult InstallNSPXCI(const QString& filename);
+    InstallResult InstallNCA(const QString& filename);
     void UpdateWindowTitle(const std::string& title_name = {},
                            const std::string& title_version = {});
     void UpdateStatusBar();
@@ -225,8 +258,13 @@ private:
     void HideMouseCursor();
     void ShowMouseCursor();
     void OpenURL(const QUrl& url);
+    void LoadTranslation();
+    void OpenPerGameConfiguration(u64 title_id, const std::string& file_name);
 
     Ui::MainWindow ui;
+
+    std::unique_ptr<DiscordRPC::DiscordInterface> discord_rpc;
+    std::shared_ptr<InputCommon::InputSubsystem> input_subsystem;
 
     GRenderWindow* render_window;
     GameList* game_list;
@@ -236,6 +274,7 @@ private:
 
     // Status bar elements
     QLabel* message_label = nullptr;
+    QLabel* shader_building_label = nullptr;
     QLabel* emu_speed_label = nullptr;
     QLabel* game_fps_label = nullptr;
     QLabel* emu_frametime_label = nullptr;
@@ -271,6 +310,11 @@ private:
     QStringList default_theme_paths;
 
     HotkeyRegistry hotkey_registry;
+
+    QTranslator translator;
+
+    // Install progress dialog
+    QProgressDialog* install_progress;
 
 protected:
     void dropEvent(QDropEvent* event) override;

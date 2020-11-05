@@ -6,10 +6,12 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/logging/log.h"
 
 #include "video_core/renderer_vulkan/wrapper.h"
 
@@ -17,21 +19,42 @@ namespace Vulkan::vk {
 
 namespace {
 
-void SortPhysicalDevices(std::vector<VkPhysicalDevice>& devices, const InstanceDispatch& dld) {
-    std::stable_sort(devices.begin(), devices.end(), [&](auto lhs, auto rhs) {
-        // This will call Vulkan more than needed, but these calls are cheap.
-        const auto lhs_properties = vk::PhysicalDevice(lhs, dld).GetProperties();
-        const auto rhs_properties = vk::PhysicalDevice(rhs, dld).GetProperties();
+template <typename Func>
+void SortPhysicalDevices(std::vector<VkPhysicalDevice>& devices, const InstanceDispatch& dld,
+                         Func&& func) {
+    // Calling GetProperties calls Vulkan more than needed. But they are supposed to be cheap
+    // functions.
+    std::stable_sort(devices.begin(), devices.end(),
+                     [&dld, &func](VkPhysicalDevice lhs, VkPhysicalDevice rhs) {
+                         return func(vk::PhysicalDevice(lhs, dld).GetProperties(),
+                                     vk::PhysicalDevice(rhs, dld).GetProperties());
+                     });
+}
 
-        // Prefer discrete GPUs, Nvidia over AMD, AMD over Intel, Intel over the rest.
-        const bool preferred =
-            (lhs_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
-             rhs_properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) ||
-            (lhs_properties.vendorID == 0x10DE && rhs_properties.vendorID != 0x10DE) ||
-            (lhs_properties.vendorID == 0x1002 && rhs_properties.vendorID != 0x1002) ||
-            (lhs_properties.vendorID == 0x8086 && rhs_properties.vendorID != 0x8086);
-        return !preferred;
+void SortPhysicalDevicesPerVendor(std::vector<VkPhysicalDevice>& devices,
+                                  const InstanceDispatch& dld,
+                                  std::initializer_list<u32> vendor_ids) {
+    for (auto it = vendor_ids.end(); it != vendor_ids.begin();) {
+        --it;
+        SortPhysicalDevices(devices, dld, [id = *it](const auto& lhs, const auto& rhs) {
+            return lhs.vendorID == id && rhs.vendorID != id;
+        });
+    }
+}
+
+void SortPhysicalDevices(std::vector<VkPhysicalDevice>& devices, const InstanceDispatch& dld) {
+    // Sort by name, this will set a base and make GPUs with higher numbers appear first
+    // (e.g. GTX 1650 will intentionally be listed before a GTX 1080).
+    SortPhysicalDevices(devices, dld, [](const auto& lhs, const auto& rhs) {
+        return std::string_view{lhs.deviceName} > std::string_view{rhs.deviceName};
     });
+    // Prefer discrete over non-discrete
+    SortPhysicalDevices(devices, dld, [](const auto& lhs, const auto& rhs) {
+        return lhs.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+               rhs.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    });
+    // Prefer Nvidia over AMD, AMD over Intel, Intel over the rest.
+    SortPhysicalDevicesPerVendor(devices, dld, {0x10DE, 0x1002, 0x8086});
 }
 
 template <typename T>
@@ -148,6 +171,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetFenceStatus);
     X(vkGetImageMemoryRequirements);
     X(vkGetQueryPoolResults);
+    X(vkGetSemaphoreCounterValueKHR);
     X(vkMapMemory);
     X(vkQueueSubmit);
     X(vkResetFences);
@@ -156,6 +180,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkUpdateDescriptorSetWithTemplateKHR);
     X(vkUpdateDescriptorSets);
     X(vkWaitForFences);
+    X(vkWaitSemaphoresKHR);
 #undef X
 }
 
@@ -262,6 +287,22 @@ const char* ToString(VkResult result) noexcept {
         return "VK_ERROR_INVALID_DEVICE_ADDRESS_EXT";
     case VkResult::VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
         return "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT";
+    case VkResult::VK_ERROR_UNKNOWN:
+        return "VK_ERROR_UNKNOWN";
+    case VkResult::VK_ERROR_INCOMPATIBLE_VERSION_KHR:
+        return "VK_ERROR_INCOMPATIBLE_VERSION_KHR";
+    case VkResult::VK_THREAD_IDLE_KHR:
+        return "VK_THREAD_IDLE_KHR";
+    case VkResult::VK_THREAD_DONE_KHR:
+        return "VK_THREAD_DONE_KHR";
+    case VkResult::VK_OPERATION_DEFERRED_KHR:
+        return "VK_OPERATION_DEFERRED_KHR";
+    case VkResult::VK_OPERATION_NOT_DEFERRED_KHR:
+        return "VK_OPERATION_NOT_DEFERRED_KHR";
+    case VkResult::VK_PIPELINE_COMPILE_REQUIRED_EXT:
+        return "VK_PIPELINE_COMPILE_REQUIRED_EXT";
+    case VkResult::VK_RESULT_MAX_ENUM:
+        return "VK_RESULT_MAX_ENUM";
     }
     return "Unknown";
 }
@@ -375,26 +416,27 @@ VkResult Free(VkDevice device, VkCommandPool handle, Span<VkCommandBuffer> buffe
     return VK_SUCCESS;
 }
 
-Instance Instance::Create(Span<const char*> layers, Span<const char*> extensions,
+Instance Instance::Create(u32 version, Span<const char*> layers, Span<const char*> extensions,
                           InstanceDispatch& dld) noexcept {
-    VkApplicationInfo application_info;
-    application_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    application_info.pNext = nullptr;
-    application_info.pApplicationName = "yuzu Emulator";
-    application_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
-    application_info.pEngineName = "yuzu Emulator";
-    application_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-    application_info.apiVersion = VK_API_VERSION_1_1;
-
-    VkInstanceCreateInfo ci;
-    ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    ci.pNext = nullptr;
-    ci.flags = 0;
-    ci.pApplicationInfo = &application_info;
-    ci.enabledLayerCount = layers.size();
-    ci.ppEnabledLayerNames = layers.data();
-    ci.enabledExtensionCount = extensions.size();
-    ci.ppEnabledExtensionNames = extensions.data();
+    const VkApplicationInfo application_info{
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pNext = nullptr,
+        .pApplicationName = "yuzu Emulator",
+        .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
+        .pEngineName = "yuzu Emulator",
+        .engineVersion = VK_MAKE_VERSION(0, 1, 0),
+        .apiVersion = version,
+    };
+    const VkInstanceCreateInfo ci{
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .pApplicationInfo = &application_info,
+        .enabledLayerCount = layers.size(),
+        .ppEnabledLayerNames = layers.data(),
+        .enabledExtensionCount = extensions.size(),
+        .ppEnabledExtensionNames = extensions.data(),
+    };
 
     VkInstance instance;
     if (dld.vkCreateInstance(&ci, nullptr, &instance) != VK_SUCCESS) {
@@ -425,19 +467,20 @@ std::optional<std::vector<VkPhysicalDevice>> Instance::EnumeratePhysicalDevices(
 
 DebugCallback Instance::TryCreateDebugCallback(
     PFN_vkDebugUtilsMessengerCallbackEXT callback) noexcept {
-    VkDebugUtilsMessengerCreateInfoEXT ci;
-    ci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    ci.pNext = nullptr;
-    ci.flags = 0;
-    ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
-    ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    ci.pfnUserCallback = callback;
-    ci.pUserData = nullptr;
+    const VkDebugUtilsMessengerCreateInfoEXT ci{
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .pNext = nullptr,
+        .flags = 0,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        .pfnUserCallback = callback,
+        .pUserData = nullptr,
+    };
 
     VkDebugUtilsMessengerEXT messenger;
     if (dld->vkCreateDebugUtilsMessengerEXT(handle, &ci, nullptr, &messenger) != VK_SUCCESS) {
@@ -468,12 +511,13 @@ DescriptorSets DescriptorPool::Allocate(const VkDescriptorSetAllocateInfo& ai) c
 }
 
 CommandBuffers CommandPool::Allocate(std::size_t num_buffers, VkCommandBufferLevel level) const {
-    VkCommandBufferAllocateInfo ai;
-    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ai.pNext = nullptr;
-    ai.commandPool = handle;
-    ai.level = level;
-    ai.commandBufferCount = static_cast<u32>(num_buffers);
+    const VkCommandBufferAllocateInfo ai{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .commandPool = handle,
+        .level = level,
+        .commandBufferCount = static_cast<u32>(num_buffers),
+    };
 
     std::unique_ptr buffers = std::make_unique<VkCommandBuffer[]>(num_buffers);
     switch (const VkResult result = dld->vkAllocateCommandBuffers(owner, &ai, buffers.get())) {
@@ -497,17 +541,18 @@ std::vector<VkImage> SwapchainKHR::GetImages() const {
 Device Device::Create(VkPhysicalDevice physical_device, Span<VkDeviceQueueCreateInfo> queues_ci,
                       Span<const char*> enabled_extensions, const void* next,
                       DeviceDispatch& dld) noexcept {
-    VkDeviceCreateInfo ci;
-    ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    ci.pNext = next;
-    ci.flags = 0;
-    ci.queueCreateInfoCount = queues_ci.size();
-    ci.pQueueCreateInfos = queues_ci.data();
-    ci.enabledLayerCount = 0;
-    ci.ppEnabledLayerNames = nullptr;
-    ci.enabledExtensionCount = enabled_extensions.size();
-    ci.ppEnabledExtensionNames = enabled_extensions.data();
-    ci.pEnabledFeatures = nullptr;
+    const VkDeviceCreateInfo ci{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = next,
+        .flags = 0,
+        .queueCreateInfoCount = queues_ci.size(),
+        .pQueueCreateInfos = queues_ci.data(),
+        .enabledLayerCount = 0,
+        .ppEnabledLayerNames = nullptr,
+        .enabledExtensionCount = enabled_extensions.size(),
+        .ppEnabledExtensionNames = enabled_extensions.data(),
+        .pEnabledFeatures = nullptr,
+    };
 
     VkDevice device;
     if (dld.vkCreateDevice(physical_device, &ci, nullptr, &device) != VK_SUCCESS) {
@@ -548,11 +593,15 @@ ImageView Device::CreateImageView(const VkImageViewCreateInfo& ci) const {
 }
 
 Semaphore Device::CreateSemaphore() const {
-    VkSemaphoreCreateInfo ci;
-    ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    ci.pNext = nullptr;
-    ci.flags = 0;
+    static constexpr VkSemaphoreCreateInfo ci{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    };
+    return CreateSemaphore(ci);
+}
 
+Semaphore Device::CreateSemaphore(const VkSemaphoreCreateInfo& ci) const {
     VkSemaphore object;
     Check(dld->vkCreateSemaphore(handle, &ci, nullptr, &object));
     return Semaphore(object, handle, *dld);
@@ -639,10 +688,12 @@ ShaderModule Device::CreateShaderModule(const VkShaderModuleCreateInfo& ci) cons
 }
 
 Event Device::CreateEvent() const {
-    VkEventCreateInfo ci;
-    ci.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
-    ci.pNext = nullptr;
-    ci.flags = 0;
+    static constexpr VkEventCreateInfo ci{
+        .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    };
+
     VkEvent object;
     Check(dld->vkCreateEvent(handle, &ci, nullptr, &object));
     return Event(object, handle, *dld);
@@ -765,6 +816,21 @@ VkPhysicalDeviceMemoryProperties PhysicalDevice::GetMemoryProperties() const noe
     VkPhysicalDeviceMemoryProperties properties;
     dld->vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
     return properties;
+}
+
+u32 AvailableVersion(const InstanceDispatch& dld) noexcept {
+    PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion;
+    if (!Proc(vkEnumerateInstanceVersion, dld, "vkEnumerateInstanceVersion")) {
+        // If the procedure is not found, Vulkan 1.0 is assumed
+        return VK_API_VERSION_1_0;
+    }
+    u32 version;
+    if (const VkResult result = vkEnumerateInstanceVersion(&version); result != VK_SUCCESS) {
+        LOG_ERROR(Render_Vulkan, "vkEnumerateInstanceVersion returned {}, assuming Vulkan 1.1",
+                  ToString(result));
+        return VK_API_VERSION_1_1;
+    }
+    return version;
 }
 
 std::optional<std::vector<VkExtensionProperties>> EnumerateInstanceExtensionProperties(

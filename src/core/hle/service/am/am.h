@@ -149,6 +149,12 @@ private:
     void GetAccumulatedSuspendedTickValue(Kernel::HLERequestContext& ctx);
     void GetAccumulatedSuspendedTickChangedEvent(Kernel::HLERequestContext& ctx);
 
+    enum class ScreenshotPermission : u32 {
+        Inherit = 0,
+        Enable = 1,
+        Disable = 2,
+    };
+
     Core::System& system;
     std::shared_ptr<NVFlinger::NVFlinger> nvflinger;
     Kernel::EventPair launchable_event;
@@ -157,6 +163,7 @@ private:
     u32 idle_time_detection_extension = 0;
     u64 num_fatal_sections_entered = 0;
     bool is_auto_sleep_disabled = false;
+    ScreenshotPermission screenshot_permission = ScreenshotPermission::Inherit;
 };
 
 class ICommonStateGetter final : public ServiceFramework<ICommonStateGetter> {
@@ -281,11 +288,13 @@ private:
     void SetApplicationCopyrightVisibility(Kernel::HLERequestContext& ctx);
     void QueryApplicationPlayStatistics(Kernel::HLERequestContext& ctx);
     void QueryApplicationPlayStatisticsByUid(Kernel::HLERequestContext& ctx);
+    void GetPreviousProgramIndex(Kernel::HLERequestContext& ctx);
     void GetGpuErrorDetectedSystemEvent(Kernel::HLERequestContext& ctx);
     void GetFriendInvitationStorageChannelEvent(Kernel::HLERequestContext& ctx);
 
     bool launch_popped_application_specific = false;
     bool launch_popped_account_preselect = false;
+    s32 previous_program_index{-1};
     Kernel::EventPair gpu_error_detected_event;
     Kernel::EventPair friend_invitation_storage_channel_event;
     Core::System& system;

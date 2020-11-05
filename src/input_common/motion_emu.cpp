@@ -18,11 +18,11 @@ namespace InputCommon {
 // Implementation class of the motion emulation device
 class MotionEmuDevice {
 public:
-    MotionEmuDevice(int update_millisecond, float sensitivity)
-        : update_millisecond(update_millisecond),
+    explicit MotionEmuDevice(int update_millisecond_, float sensitivity_)
+        : update_millisecond(update_millisecond_),
           update_duration(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
               std::chrono::milliseconds(update_millisecond))),
-          sensitivity(sensitivity), motion_emu_thread(&MotionEmuDevice::MotionEmuThread, this) {}
+          sensitivity(sensitivity_), motion_emu_thread(&MotionEmuDevice::MotionEmuThread, this) {}
 
     ~MotionEmuDevice() {
         if (motion_emu_thread.joinable()) {
@@ -37,16 +37,18 @@ public:
     }
 
     void Tilt(int x, int y) {
-        auto mouse_move = Common::MakeVec(x, y) - mouse_origin;
-        if (is_tilting) {
-            std::lock_guard guard{tilt_mutex};
-            if (mouse_move.x == 0 && mouse_move.y == 0) {
-                tilt_angle = 0;
-            } else {
-                tilt_direction = mouse_move.Cast<float>();
-                tilt_angle =
-                    std::clamp(tilt_direction.Normalize() * sensitivity, 0.0f, Common::PI * 0.5f);
-            }
+        if (!is_tilting) {
+            return;
+        }
+
+        std::lock_guard guard{tilt_mutex};
+        const auto mouse_move = Common::MakeVec(x, y) - mouse_origin;
+        if (mouse_move.x == 0 && mouse_move.y == 0) {
+            tilt_angle = 0;
+        } else {
+            tilt_direction = mouse_move.Cast<float>();
+            tilt_angle =
+                std::clamp(tilt_direction.Normalize() * sensitivity, 0.0f, Common::PI * 0.5f);
         }
     }
 
@@ -56,7 +58,7 @@ public:
         is_tilting = false;
     }
 
-    std::tuple<Common::Vec3<float>, Common::Vec3<float>> GetStatus() {
+    Input::MotionStatus GetStatus() {
         std::lock_guard guard{status_mutex};
         return status;
     }
@@ -76,7 +78,7 @@ private:
 
     Common::Event shutdown_event;
 
-    std::tuple<Common::Vec3<float>, Common::Vec3<float>> status;
+    Input::MotionStatus status;
     std::mutex status_mutex;
 
     // Note: always keep the thread declaration at the end so that other objects are initialized
@@ -86,11 +88,10 @@ private:
     void MotionEmuThread() {
         auto update_time = std::chrono::steady_clock::now();
         Common::Quaternion<float> q = Common::MakeQuaternion(Common::Vec3<float>(), 0);
-        Common::Quaternion<float> old_q;
 
         while (!shutdown_event.WaitUntil(update_time)) {
             update_time += update_duration;
-            old_q = q;
+            const Common::Quaternion<float> old_q = q;
 
             {
                 std::lock_guard guard{tilt_mutex};
@@ -100,23 +101,32 @@ private:
                     Common::MakeVec(-tilt_direction.y, 0.0f, tilt_direction.x), tilt_angle);
             }
 
-            auto inv_q = q.Inverse();
+            const auto inv_q = q.Inverse();
 
             // Set the gravity vector in world space
             auto gravity = Common::MakeVec(0.0f, -1.0f, 0.0f);
 
             // Find the angular rate vector in world space
             auto angular_rate = ((q - old_q) * inv_q).xyz * 2;
-            angular_rate *= 1000 / update_millisecond / Common::PI * 180;
+            angular_rate *= static_cast<float>(1000 / update_millisecond) / Common::PI * 180.0f;
 
             // Transform the two vectors from world space to 3DS space
             gravity = QuaternionRotate(inv_q, gravity);
             angular_rate = QuaternionRotate(inv_q, angular_rate);
 
+            // TODO: Calculate the correct rotation vector and orientation matrix
+            const auto matrix4x4 = q.ToMatrix();
+            const auto rotation = Common::MakeVec(0.0f, 0.0f, 0.0f);
+            const std::array orientation{
+                Common::Vec3f(matrix4x4[0], matrix4x4[1], -matrix4x4[2]),
+                Common::Vec3f(matrix4x4[4], matrix4x4[5], -matrix4x4[6]),
+                Common::Vec3f(-matrix4x4[8], -matrix4x4[9], matrix4x4[10]),
+            };
+
             // Update the sensor state
             {
                 std::lock_guard guard{status_mutex};
-                status = std::make_tuple(gravity, angular_rate);
+                status = std::make_tuple(gravity, angular_rate, rotation, orientation);
             }
         }
     }
@@ -127,11 +137,11 @@ private:
 // can forward all the inputs to the implementation only when it is valid.
 class MotionEmuDeviceWrapper : public Input::MotionDevice {
 public:
-    MotionEmuDeviceWrapper(int update_millisecond, float sensitivity) {
+    explicit MotionEmuDeviceWrapper(int update_millisecond, float sensitivity) {
         device = std::make_shared<MotionEmuDevice>(update_millisecond, sensitivity);
     }
 
-    std::tuple<Common::Vec3<float>, Common::Vec3<float>> GetStatus() const override {
+    Input::MotionStatus GetStatus() const override {
         return device->GetStatus();
     }
 
@@ -139,8 +149,8 @@ public:
 };
 
 std::unique_ptr<Input::MotionDevice> MotionEmu::Create(const Common::ParamPackage& params) {
-    int update_period = params.Get("update_period", 100);
-    float sensitivity = params.Get("sensitivity", 0.01f);
+    const int update_period = params.Get("update_period", 100);
+    const float sensitivity = params.Get("sensitivity", 0.01f);
     auto device_wrapper = std::make_unique<MotionEmuDeviceWrapper>(update_period, sensitivity);
     // Previously created device is disconnected here. Having two motion devices for 3DS is not
     // expected.

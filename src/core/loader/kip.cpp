@@ -16,7 +16,7 @@ namespace Loader {
 
 namespace {
 constexpr u32 PageAlignSize(u32 size) {
-    return (size + Core::Memory::PAGE_MASK) & ~Core::Memory::PAGE_MASK;
+    return static_cast<u32>((size + Core::Memory::PAGE_MASK) & ~Core::Memory::PAGE_MASK);
 }
 } // Anonymous namespace
 
@@ -43,7 +43,8 @@ FileType AppLoader_KIP::GetFileType() const {
                                                                          : FileType::Error;
 }
 
-AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
+AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process,
+                                          [[maybe_unused]] Core::System& system) {
     if (is_loaded) {
         return {ResultStatus::ErrorAlreadyLoaded, {}};
     }

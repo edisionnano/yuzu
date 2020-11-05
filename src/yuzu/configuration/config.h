@@ -23,7 +23,9 @@ public:
     void Save();
 
     static const std::array<int, Settings::NativeButton::NumButtons> default_buttons;
-    static const std::array<std::array<int, 5>, Settings::NativeAnalog::NumAnalogs> default_analogs;
+    static const std::array<int, Settings::NativeMotion::NumMotions> default_motions;
+    static const std::array<std::array<int, 4>, Settings::NativeAnalog::NumAnalogs> default_analogs;
+    static const std::array<int, 2> default_stick_mod;
     static const std::array<int, Settings::NativeMouseButton::NumMouseButtons>
         default_mouse_buttons;
     static const std::array<int, Settings::NativeKeyboard::NumKeyboardKeys> default_keyboard_keys;
@@ -37,7 +39,7 @@ private:
     void ReadKeyboardValues();
     void ReadMouseValues();
     void ReadTouchscreenValues();
-    void ApplyDefaultProfileIfInputInvalid();
+    void ReadMotionTouchValues();
 
     // Read functions bases off the respective config section names.
     void ReadAudioValues();
@@ -49,7 +51,9 @@ private:
     void ReadDisabledAddOnValues();
     void ReadMiscellaneousValues();
     void ReadPathValues();
+    void ReadCpuValues();
     void ReadRendererValues();
+    void ReadScreenshotValues();
     void ReadShortcutValues();
     void ReadSystemValues();
     void ReadUIValues();
@@ -62,6 +66,7 @@ private:
     void SaveDebugValues();
     void SaveMouseValues();
     void SaveTouchscreenValues();
+    void SaveMotionTouchValues();
 
     // Save functions based off the respective config section names.
     void SaveAudioValues();
@@ -73,7 +78,9 @@ private:
     void SaveDisabledAddOnValues();
     void SaveMiscellaneousValues();
     void SavePathValues();
+    void SaveCpuValues();
     void SaveRendererValues();
+    void SaveScreenshotValues();
     void SaveShortcutValues();
     void SaveSystemValues();
     void SaveUIValues();

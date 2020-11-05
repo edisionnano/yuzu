@@ -25,13 +25,13 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_renderpass_cache.h"
-#include "video_core/renderer_vulkan/vk_resource_manager.h"
 #include "video_core/renderer_vulkan/vk_sampler_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/shader/async_shaders.h"
 
 namespace Core {
 class System;
@@ -105,10 +105,11 @@ struct ImageView {
 
 class RasterizerVulkan final : public VideoCore::RasterizerAccelerated {
 public:
-    explicit RasterizerVulkan(Core::System& system, Core::Frontend::EmuWindow& render_window,
+    explicit RasterizerVulkan(Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu,
+                              Tegra::MemoryManager& gpu_memory, Core::Memory::Memory& cpu_memory,
                               VKScreenInfo& screen_info, const VKDevice& device,
-                              VKResourceManager& resource_manager, VKMemoryManager& memory_manager,
-                              StateTracker& state_tracker, VKScheduler& scheduler);
+                              VKMemoryManager& memory_manager, StateTracker& state_tracker,
+                              VKScheduler& scheduler);
     ~RasterizerVulkan() override;
 
     void Draw(bool is_indexed, bool is_instanced) override;
@@ -134,7 +135,14 @@ public:
                                const Tegra::Engines::Fermi2D::Config& copy_config) override;
     bool AccelerateDisplay(const Tegra::FramebufferConfig& config, VAddr framebuffer_addr,
                            u32 pixel_stride) override;
-    void SetupDirtyFlags() override;
+
+    VideoCommon::Shader::AsyncShaders& GetAsyncShaders() {
+        return async_shaders;
+    }
+
+    const VideoCommon::Shader::AsyncShaders& GetAsyncShaders() const {
+        return async_shaders;
+    }
 
     /// Maximum supported size that a constbuffer can have in bytes.
     static constexpr std::size_t MaxConstbufferSize = 0x10000;
@@ -251,7 +259,6 @@ private:
     void UpdateDepthWriteEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateDepthCompareOp(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateFrontFace(Tegra::Engines::Maxwell3D::Regs& regs);
-    void UpdatePrimitiveTopology(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateStencilOp(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& regs);
 
@@ -270,11 +277,13 @@ private:
 
     VkBuffer DefaultBuffer();
 
-    Core::System& system;
-    Core::Frontend::EmuWindow& render_window;
+    Tegra::GPU& gpu;
+    Tegra::MemoryManager& gpu_memory;
+    Tegra::Engines::Maxwell3D& maxwell3d;
+    Tegra::Engines::KeplerCompute& kepler_compute;
+
     VKScreenInfo& screen_info;
     const VKDevice& device;
-    VKResourceManager& resource_manager;
     VKMemoryManager& memory_manager;
     StateTracker& state_tracker;
     VKScheduler& scheduler;
@@ -291,12 +300,13 @@ private:
     VKPipelineCache pipeline_cache;
     VKBufferCache buffer_cache;
     VKSamplerCache sampler_cache;
-    VKFenceManager fence_manager;
     VKQueryCache query_cache;
+    VKFenceManager fence_manager;
 
     vk::Buffer default_buffer;
     VKMemoryCommit default_buffer_commit;
     vk::Event wfi_event;
+    VideoCommon::Shader::AsyncShaders async_shaders;
 
     std::array<View, Maxwell::NumRenderTargets> color_attachments;
     View zeta_attachment;

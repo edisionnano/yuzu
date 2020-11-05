@@ -10,10 +10,10 @@
 #include "common/logging/log.h"
 #include "core/crypto/aes_util.h"
 #include "core/crypto/ctr_encryption_layer.h"
+#include "core/crypto/key_manager.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/nca_patch.h"
 #include "core/file_sys/partition_filesystem.h"
-#include "core/file_sys/romfs.h"
 #include "core/file_sys/vfs_offset.h"
 #include "core/loader/loader.h"
 
@@ -119,7 +119,8 @@ static bool IsValidNCA(const NCAHeader& header) {
 }
 
 NCA::NCA(VirtualFile file_, VirtualFile bktr_base_romfs_, u64 bktr_base_ivfc_offset)
-    : file(std::move(file_)), bktr_base_romfs(std::move(bktr_base_romfs_)) {
+    : file(std::move(file_)),
+      bktr_base_romfs(std::move(bktr_base_romfs_)), keys{Core::Crypto::KeyManager::Instance()} {
     if (file == nullptr) {
         status = Loader::ResultStatus::ErrorNullFile;
         return;
@@ -322,7 +323,7 @@ bool NCA::ReadRomFSSection(const NCASectionHeader& section, const NCASectionTabl
         subsection_buckets.back().entries.push_back({section.bktr.relocation.offset, {0}, ctr_low});
         subsection_buckets.back().entries.push_back({size, {0}, 0});
 
-        std::optional<Core::Crypto::Key128> key = {};
+        std::optional<Core::Crypto::Key128> key;
         if (encrypted) {
             if (has_rights_id) {
                 status = Loader::ResultStatus::Success;
@@ -441,18 +442,18 @@ std::optional<Core::Crypto::Key128> NCA::GetTitlekey() {
     memcpy(rights_id.data(), header.rights_id.data(), 16);
     if (rights_id == u128{}) {
         status = Loader::ResultStatus::ErrorInvalidRightsID;
-        return {};
+        return std::nullopt;
     }
 
     auto titlekey = keys.GetKey(Core::Crypto::S128KeyType::Titlekey, rights_id[1], rights_id[0]);
     if (titlekey == Core::Crypto::Key128{}) {
         status = Loader::ResultStatus::ErrorMissingTitlekey;
-        return {};
+        return std::nullopt;
     }
 
     if (!keys.HasKey(Core::Crypto::S128KeyType::Titlekek, master_key_id)) {
         status = Loader::ResultStatus::ErrorMissingTitlekek;
-        return {};
+        return std::nullopt;
     }
 
     Core::Crypto::AESCipher<Core::Crypto::Key128> cipher(
@@ -476,7 +477,7 @@ VirtualFile NCA::Decrypt(const NCASectionHeader& s_header, VirtualFile in, u64 s
     case NCASectionCryptoType::BKTR:
         LOG_TRACE(Crypto, "called with mode=CTR, starting_offset={:016X}", starting_offset);
         {
-            std::optional<Core::Crypto::Key128> key = {};
+            std::optional<Core::Crypto::Key128> key;
             if (has_rights_id) {
                 status = Loader::ResultStatus::Success;
                 key = GetTitlekey();
@@ -495,9 +496,10 @@ VirtualFile NCA::Decrypt(const NCASectionHeader& s_header, VirtualFile in, u64 s
 
             auto out = std::make_shared<Core::Crypto::CTREncryptionLayer>(std::move(in), *key,
                                                                           starting_offset);
-            std::vector<u8> iv(16);
-            for (u8 i = 0; i < 8; ++i)
-                iv[i] = s_header.raw.section_ctr[0x8 - i - 1];
+            Core::Crypto::CTREncryptionLayer::IVData iv{};
+            for (std::size_t i = 0; i < 8; ++i) {
+                iv[i] = s_header.raw.section_ctr[8 - i - 1];
+            }
             out->SetIV(iv);
             return std::static_pointer_cast<VfsFile>(out);
         }

@@ -267,6 +267,7 @@ struct DeviceDispatch : public InstanceDispatch {
     PFN_vkGetFenceStatus vkGetFenceStatus;
     PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements;
     PFN_vkGetQueryPoolResults vkGetQueryPoolResults;
+    PFN_vkGetSemaphoreCounterValueKHR vkGetSemaphoreCounterValueKHR;
     PFN_vkMapMemory vkMapMemory;
     PFN_vkQueueSubmit vkQueueSubmit;
     PFN_vkResetFences vkResetFences;
@@ -275,6 +276,7 @@ struct DeviceDispatch : public InstanceDispatch {
     PFN_vkUpdateDescriptorSetWithTemplateKHR vkUpdateDescriptorSetWithTemplateKHR;
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets;
     PFN_vkWaitForFences vkWaitForFences;
+    PFN_vkWaitSemaphoresKHR vkWaitSemaphoresKHR;
 };
 
 /// Loads instance agnostic function pointers.
@@ -550,7 +552,6 @@ using PipelineLayout = Handle<VkPipelineLayout, VkDevice, DeviceDispatch>;
 using QueryPool = Handle<VkQueryPool, VkDevice, DeviceDispatch>;
 using RenderPass = Handle<VkRenderPass, VkDevice, DeviceDispatch>;
 using Sampler = Handle<VkSampler, VkDevice, DeviceDispatch>;
-using Semaphore = Handle<VkSemaphore, VkDevice, DeviceDispatch>;
 using ShaderModule = Handle<VkShaderModule, VkDevice, DeviceDispatch>;
 using SurfaceKHR = Handle<VkSurfaceKHR, VkInstance, InstanceDispatch>;
 
@@ -563,7 +564,7 @@ class Instance : public Handle<VkInstance, NoOwner, InstanceDispatch> {
 
 public:
     /// Creates a Vulkan instance. Use "operator bool" for error handling.
-    static Instance Create(Span<const char*> layers, Span<const char*> extensions,
+    static Instance Create(u32 version, Span<const char*> layers, Span<const char*> extensions,
                            InstanceDispatch& dld) noexcept;
 
     /// Enumerates physical devices.
@@ -582,7 +583,8 @@ public:
     /// Construct a queue handle.
     constexpr Queue(VkQueue queue, const DeviceDispatch& dld) noexcept : queue{queue}, dld{&dld} {}
 
-    VkResult Submit(Span<VkSubmitInfo> submit_infos, VkFence fence) const noexcept {
+    VkResult Submit(Span<VkSubmitInfo> submit_infos,
+                    VkFence fence = VK_NULL_HANDLE) const noexcept {
         return dld->vkQueueSubmit(queue, submit_infos.size(), submit_infos.data(), fence);
     }
 
@@ -674,6 +676,44 @@ public:
     }
 };
 
+class Semaphore : public Handle<VkSemaphore, VkDevice, DeviceDispatch> {
+    using Handle<VkSemaphore, VkDevice, DeviceDispatch>::Handle;
+
+public:
+    [[nodiscard]] u64 GetCounter() const {
+        u64 value;
+        Check(dld->vkGetSemaphoreCounterValueKHR(owner, handle, &value));
+        return value;
+    }
+
+    /**
+     * Waits for a timeline semaphore on the host.
+     *
+     * @param value   Value to wait
+     * @param timeout Time in nanoseconds to timeout
+     * @return        True on successful wait, false on timeout
+     */
+    bool Wait(u64 value, u64 timeout = std::numeric_limits<u64>::max()) const {
+        const VkSemaphoreWaitInfoKHR wait_info{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR,
+            .pNext = nullptr,
+            .flags = 0,
+            .semaphoreCount = 1,
+            .pSemaphores = &handle,
+            .pValues = &value,
+        };
+        const VkResult result = dld->vkWaitSemaphoresKHR(owner, &wait_info, timeout);
+        switch (result) {
+        case VK_SUCCESS:
+            return true;
+        case VK_TIMEOUT:
+            return false;
+        default:
+            throw Exception(result);
+        }
+    }
+};
+
 class Device : public Handle<VkDevice, NoOwner, DeviceDispatch> {
     using Handle<VkDevice, NoOwner, DeviceDispatch>::Handle;
 
@@ -693,6 +733,8 @@ public:
     ImageView CreateImageView(const VkImageViewCreateInfo& ci) const;
 
     Semaphore CreateSemaphore() const;
+
+    Semaphore CreateSemaphore(const VkSemaphoreCreateInfo& ci) const;
 
     Fence CreateFence(const VkFenceCreateInfo& ci) const;
 
@@ -756,8 +798,8 @@ public:
     }
 
     VkResult GetQueryResults(VkQueryPool query_pool, u32 first, u32 count, std::size_t data_size,
-                             void* data, VkDeviceSize stride, VkQueryResultFlags flags) const
-        noexcept {
+                             void* data, VkDeviceSize stride,
+                             VkQueryResultFlags flags) const noexcept {
         return dld->vkGetQueryPoolResults(handle, query_pool, first, count, data_size, data, stride,
                                           flags);
     }
@@ -849,8 +891,8 @@ public:
         dld->vkCmdBindPipeline(handle, bind_point, pipeline);
     }
 
-    void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType index_type) const
-        noexcept {
+    void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset,
+                         VkIndexType index_type) const noexcept {
         dld->vkCmdBindIndexBuffer(handle, buffer, offset, index_type);
     }
 
@@ -863,8 +905,8 @@ public:
         BindVertexBuffers(binding, 1, &buffer, &offset);
     }
 
-    void Draw(u32 vertex_count, u32 instance_count, u32 first_vertex, u32 first_instance) const
-        noexcept {
+    void Draw(u32 vertex_count, u32 instance_count, u32 first_vertex,
+              u32 first_instance) const noexcept {
         dld->vkCmdDraw(handle, vertex_count, instance_count, first_vertex, first_instance);
     }
 
@@ -874,15 +916,15 @@ public:
                               first_instance);
     }
 
-    void ClearAttachments(Span<VkClearAttachment> attachments, Span<VkClearRect> rects) const
-        noexcept {
+    void ClearAttachments(Span<VkClearAttachment> attachments,
+                          Span<VkClearRect> rects) const noexcept {
         dld->vkCmdClearAttachments(handle, attachments.size(), attachments.data(), rects.size(),
                                    rects.data());
     }
 
     void BlitImage(VkImage src_image, VkImageLayout src_layout, VkImage dst_image,
-                   VkImageLayout dst_layout, Span<VkImageBlit> regions, VkFilter filter) const
-        noexcept {
+                   VkImageLayout dst_layout, Span<VkImageBlit> regions,
+                   VkFilter filter) const noexcept {
         dld->vkCmdBlitImage(handle, src_image, src_layout, dst_image, dst_layout, regions.size(),
                             regions.data(), filter);
     }
@@ -907,8 +949,8 @@ public:
                                     regions.data());
     }
 
-    void CopyBuffer(VkBuffer src_buffer, VkBuffer dst_buffer, Span<VkBufferCopy> regions) const
-        noexcept {
+    void CopyBuffer(VkBuffer src_buffer, VkBuffer dst_buffer,
+                    Span<VkBufferCopy> regions) const noexcept {
         dld->vkCmdCopyBuffer(handle, src_buffer, dst_buffer, regions.size(), regions.data());
     }
 
@@ -924,8 +966,8 @@ public:
                                     regions.data());
     }
 
-    void FillBuffer(VkBuffer dst_buffer, VkDeviceSize dst_offset, VkDeviceSize size, u32 data) const
-        noexcept {
+    void FillBuffer(VkBuffer dst_buffer, VkDeviceSize dst_offset, VkDeviceSize size,
+                    u32 data) const noexcept {
         dld->vkCmdFillBuffer(handle, dst_buffer, dst_offset, size, data);
     }
 
@@ -1047,6 +1089,8 @@ private:
     VkCommandBuffer handle;
     const DeviceDispatch* dld;
 };
+
+u32 AvailableVersion(const InstanceDispatch& dld) noexcept;
 
 std::optional<std::vector<VkExtensionProperties>> EnumerateInstanceExtensionProperties(
     const InstanceDispatch& dld);

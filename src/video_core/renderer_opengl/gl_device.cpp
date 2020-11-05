@@ -193,7 +193,6 @@ bool IsASTCSupported() {
 Device::Device()
     : max_uniform_buffers{BuildMaxUniformBuffers()}, base_bindings{BuildBaseBindings()} {
     const std::string_view vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
-    const std::string_view renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     const std::string_view version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     const std::vector extensions = GetExtensions();
 
@@ -212,6 +211,7 @@ Device::Device()
     shader_storage_alignment = GetInteger<std::size_t>(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT);
     max_vertex_attributes = GetInteger<u32>(GL_MAX_VERTEX_ATTRIBS);
     max_varyings = GetInteger<u32>(GL_MAX_VARYING_VECTORS);
+    max_compute_shared_memory_size = GetInteger<u32>(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE);
     has_warp_intrinsics = GLAD_GL_NV_gpu_shader5 && GLAD_GL_NV_shader_thread_group &&
                           GLAD_GL_NV_shader_thread_shuffle;
     has_shader_ballot = GLAD_GL_ARB_shader_ballot;
@@ -233,6 +233,8 @@ Device::Device()
                            GLAD_GL_NV_gpu_program5 && GLAD_GL_NV_compute_program5 &&
                            GLAD_GL_NV_transform_feedback && GLAD_GL_NV_transform_feedback2;
 
+    use_asynchronous_shaders = Settings::values.use_asynchronous_shaders.GetValue();
+
     LOG_INFO(Render_OpenGL, "Renderer_VariableAOFFI: {}", has_variable_aoffi);
     LOG_INFO(Render_OpenGL, "Renderer_ComponentIndexingBug: {}", has_component_indexing_bug);
     LOG_INFO(Render_OpenGL, "Renderer_PreciseBug: {}", has_precise_bug);
@@ -248,6 +250,7 @@ Device::Device(std::nullptr_t) {
     shader_storage_alignment = 4;
     max_vertex_attributes = 16;
     max_varyings = 15;
+    max_compute_shared_memory_size = 0x10000;
     has_warp_intrinsics = true;
     has_shader_ballot = true;
     has_vertex_viewport_layer = true;

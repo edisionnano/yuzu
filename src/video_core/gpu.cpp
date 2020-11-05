@@ -20,25 +20,35 @@
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_base.h"
+#include "video_core/shader_notify.h"
 #include "video_core/video_core.h"
 
 namespace Tegra {
 
 MICROPROFILE_DEFINE(GPU_wait, "GPU", "Wait for the GPU", MP_RGB(128, 128, 192));
 
-GPU::GPU(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer_, bool is_async)
-    : system{system}, renderer{std::move(renderer_)}, is_async{is_async} {
-    auto& rasterizer{renderer->Rasterizer()};
-    memory_manager = std::make_unique<Tegra::MemoryManager>(system, rasterizer);
-    dma_pusher = std::make_unique<Tegra::DmaPusher>(system, *this);
-    maxwell_3d = std::make_unique<Engines::Maxwell3D>(system, rasterizer, *memory_manager);
-    fermi_2d = std::make_unique<Engines::Fermi2D>(rasterizer);
-    kepler_compute = std::make_unique<Engines::KeplerCompute>(system, rasterizer, *memory_manager);
-    maxwell_dma = std::make_unique<Engines::MaxwellDMA>(system, *memory_manager);
-    kepler_memory = std::make_unique<Engines::KeplerMemory>(system, *memory_manager);
-}
+GPU::GPU(Core::System& system_, bool is_async_, bool use_nvdec_)
+    : system{system_}, memory_manager{std::make_unique<Tegra::MemoryManager>(system)},
+      dma_pusher{std::make_unique<Tegra::DmaPusher>(system, *this)},
+      cdma_pusher{std::make_unique<Tegra::CDmaPusher>(*this)}, use_nvdec{use_nvdec_},
+      maxwell_3d{std::make_unique<Engines::Maxwell3D>(system, *memory_manager)},
+      fermi_2d{std::make_unique<Engines::Fermi2D>()},
+      kepler_compute{std::make_unique<Engines::KeplerCompute>(system, *memory_manager)},
+      maxwell_dma{std::make_unique<Engines::MaxwellDMA>(system, *memory_manager)},
+      kepler_memory{std::make_unique<Engines::KeplerMemory>(system, *memory_manager)},
+      shader_notify{std::make_unique<VideoCore::ShaderNotify>()}, is_async{is_async_} {}
 
 GPU::~GPU() = default;
+
+void GPU::BindRenderer(std::unique_ptr<VideoCore::RendererBase> renderer_) {
+    renderer = std::move(renderer_);
+
+    VideoCore::RasterizerInterface& rasterizer = renderer->Rasterizer();
+    memory_manager->BindRasterizer(rasterizer);
+    maxwell_3d->BindRasterizer(rasterizer);
+    fermi_2d->BindRasterizer(rasterizer);
+    kepler_compute->BindRasterizer(rasterizer);
+}
 
 Engines::Maxwell3D& GPU::Maxwell3D() {
     return *maxwell_3d;
@@ -68,8 +78,16 @@ DmaPusher& GPU::DmaPusher() {
     return *dma_pusher;
 }
 
+Tegra::CDmaPusher& GPU::CDmaPusher() {
+    return *cdma_pusher;
+}
+
 const DmaPusher& GPU::DmaPusher() const {
     return *dma_pusher;
+}
+
+const Tegra::CDmaPusher& GPU::CDmaPusher() const {
+    return *cdma_pusher;
 }
 
 void GPU::WaitFence(u32 syncpoint_id, u32 value) {
@@ -79,7 +97,7 @@ void GPU::WaitFence(u32 syncpoint_id, u32 value) {
     }
     MICROPROFILE_SCOPE(GPU_wait);
     std::unique_lock lock{sync_mutex};
-    sync_cv.wait(lock, [=]() { return syncpoints[syncpoint_id].load() >= value; });
+    sync_cv.wait(lock, [=, this] { return syncpoints[syncpoint_id].load() >= value; });
 }
 
 void GPU::IncrementSyncPoint(const u32 syncpoint_id) {
@@ -176,30 +194,6 @@ void GPU::SyncGuestHost() {
 void GPU::OnCommandListEnd() {
     renderer->Rasterizer().ReleaseFences();
 }
-// Note that, traditionally, methods are treated as 4-byte addressable locations, and hence
-// their numbers are written down multiplied by 4 in Docs. Here we are not multiply by 4.
-// So the values you see in docs might be multiplied by 4.
-enum class BufferMethods {
-    BindObject = 0x0,
-    Nop = 0x2,
-    SemaphoreAddressHigh = 0x4,
-    SemaphoreAddressLow = 0x5,
-    SemaphoreSequence = 0x6,
-    SemaphoreTrigger = 0x7,
-    NotifyIntr = 0x8,
-    WrcacheFlush = 0x9,
-    Unk28 = 0xA,
-    UnkCacheFlush = 0xB,
-    RefCnt = 0x14,
-    SemaphoreAcquire = 0x1A,
-    SemaphoreRelease = 0x1B,
-    FenceValue = 0x1C,
-    FenceAction = 0x1D,
-    Unk78 = 0x1E,
-    Unk7c = 0x1F,
-    Yield = 0x20,
-    NonPullerMethods = 0x40,
-};
 
 enum class GpuSemaphoreOperation {
     AcquireEqual = 0x1,
@@ -259,7 +253,12 @@ void GPU::CallPullerMethod(const MethodCall& method_call) {
     case BufferMethods::UnkCacheFlush:
     case BufferMethods::WrcacheFlush:
     case BufferMethods::FenceValue:
+        break;
     case BufferMethods::FenceAction:
+        ProcessFenceActionMethod();
+        break;
+    case BufferMethods::WaitForInterrupt:
+        ProcessWaitForInterruptMethod();
         break;
     case BufferMethods::SemaphoreTrigger: {
         ProcessSemaphoreTriggerMethod();
@@ -371,6 +370,25 @@ void GPU::ProcessBindMethod(const MethodCall& method_call) {
     default:
         UNIMPLEMENTED_MSG("Unimplemented engine {:04X}", static_cast<u32>(engine_id));
     }
+}
+
+void GPU::ProcessFenceActionMethod() {
+    switch (regs.fence_action.op) {
+    case FenceOperation::Acquire:
+        WaitFence(regs.fence_action.syncpoint_id, regs.fence_value);
+        break;
+    case FenceOperation::Increment:
+        IncrementSyncPoint(regs.fence_action.syncpoint_id);
+        break;
+    default:
+        UNIMPLEMENTED_MSG("Unimplemented operation {}",
+                          static_cast<u32>(regs.fence_action.op.Value()));
+    }
+}
+
+void GPU::ProcessWaitForInterruptMethod() {
+    // TODO(bunnei) ImplementMe
+    LOG_WARNING(HW_GPU, "(STUBBED) called");
 }
 
 void GPU::ProcessSemaphoreTriggerMethod() {

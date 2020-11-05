@@ -7,25 +7,39 @@
 
 namespace VideoCommon {
 
-GPUSynch::GPUSynch(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer,
-                   std::unique_ptr<Core::Frontend::GraphicsContext>&& context)
-    : GPU(system, std::move(renderer), false), context{std::move(context)} {}
+GPUSynch::GPUSynch(Core::System& system, bool use_nvdec) : GPU{system, false, use_nvdec} {}
 
 GPUSynch::~GPUSynch() = default;
 
 void GPUSynch::Start() {}
 
 void GPUSynch::ObtainContext() {
-    context->MakeCurrent();
+    renderer->Context().MakeCurrent();
 }
 
 void GPUSynch::ReleaseContext() {
-    context->DoneCurrent();
+    renderer->Context().DoneCurrent();
 }
 
 void GPUSynch::PushGPUEntries(Tegra::CommandList&& entries) {
     dma_pusher->Push(std::move(entries));
     dma_pusher->DispatchCalls();
+}
+
+void GPUSynch::PushCommandBuffer(Tegra::ChCommandHeaderList& entries) {
+    if (!use_nvdec) {
+        return;
+    }
+    // This condition fires when a video stream ends, clears all intermediary data
+    if (entries[0].raw == 0xDEADB33F) {
+        cdma_pusher.reset();
+        return;
+    }
+    if (!cdma_pusher) {
+        cdma_pusher = std::make_unique<Tegra::CDmaPusher>(*this);
+    }
+    cdma_pusher->Push(std::move(entries));
+    cdma_pusher->DispatchCalls();
 }
 
 void GPUSynch::SwapBuffers(const Tegra::FramebufferConfig* framebuffer) {

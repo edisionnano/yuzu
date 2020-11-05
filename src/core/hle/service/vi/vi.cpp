@@ -159,7 +159,7 @@ public:
         header.data_size = static_cast<u32_le>(write_index - sizeof(Header));
         header.data_offset = sizeof(Header);
         header.objects_size = 4;
-        header.objects_offset = sizeof(Header) + header.data_size;
+        header.objects_offset = static_cast<u32>(sizeof(Header) + header.data_size);
         std::memcpy(buffer.data(), &header, sizeof(Header));
 
         return buffer;
@@ -215,10 +215,9 @@ public:
     explicit IGBPConnectRequestParcel(std::vector<u8> buffer) : Parcel(std::move(buffer)) {
         Deserialize();
     }
-    ~IGBPConnectRequestParcel() override = default;
 
     void DeserializeData() override {
-        std::u16string token = ReadInterfaceToken();
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
         data = Read<Data>();
     }
 
@@ -279,10 +278,9 @@ public:
         : Parcel(std::move(buffer)) {
         Deserialize();
     }
-    ~IGBPSetPreallocatedBufferRequestParcel() override = default;
 
     void DeserializeData() override {
-        std::u16string token = ReadInterfaceToken();
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
         data = Read<Data>();
         buffer = Read<NVFlinger::IGBPBuffer>();
     }
@@ -306,15 +304,40 @@ protected:
     }
 };
 
+class IGBPCancelBufferRequestParcel : public Parcel {
+public:
+    explicit IGBPCancelBufferRequestParcel(std::vector<u8> buffer) : Parcel(std::move(buffer)) {
+        Deserialize();
+    }
+
+    void DeserializeData() override {
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
+        data = Read<Data>();
+    }
+
+    struct Data {
+        u32_le slot;
+        Service::Nvidia::MultiFence multi_fence;
+    };
+
+    Data data;
+};
+
+class IGBPCancelBufferResponseParcel : public Parcel {
+protected:
+    void SerializeData() override {
+        Write<u32>(0); // Success
+    }
+};
+
 class IGBPDequeueBufferRequestParcel : public Parcel {
 public:
     explicit IGBPDequeueBufferRequestParcel(std::vector<u8> buffer) : Parcel(std::move(buffer)) {
         Deserialize();
     }
-    ~IGBPDequeueBufferRequestParcel() override = default;
 
     void DeserializeData() override {
-        std::u16string token = ReadInterfaceToken();
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
         data = Read<Data>();
     }
 
@@ -333,7 +356,6 @@ class IGBPDequeueBufferResponseParcel : public Parcel {
 public:
     explicit IGBPDequeueBufferResponseParcel(u32 slot, Service::Nvidia::MultiFence& multi_fence)
         : slot(slot), multi_fence(multi_fence) {}
-    ~IGBPDequeueBufferResponseParcel() override = default;
 
 protected:
     void SerializeData() override {
@@ -352,10 +374,9 @@ public:
     explicit IGBPRequestBufferRequestParcel(std::vector<u8> buffer) : Parcel(std::move(buffer)) {
         Deserialize();
     }
-    ~IGBPRequestBufferRequestParcel() override = default;
 
     void DeserializeData() override {
-        std::u16string token = ReadInterfaceToken();
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
         slot = Read<u32_le>();
     }
 
@@ -384,10 +405,9 @@ public:
     explicit IGBPQueueBufferRequestParcel(std::vector<u8> buffer) : Parcel(std::move(buffer)) {
         Deserialize();
     }
-    ~IGBPQueueBufferRequestParcel() override = default;
 
     void DeserializeData() override {
-        std::u16string token = ReadInterfaceToken();
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
         data = Read<Data>();
     }
 
@@ -447,10 +467,9 @@ public:
     explicit IGBPQueryRequestParcel(std::vector<u8> buffer) : Parcel(std::move(buffer)) {
         Deserialize();
     }
-    ~IGBPQueryRequestParcel() override = default;
 
     void DeserializeData() override {
-        std::u16string token = ReadInterfaceToken();
+        [[maybe_unused]] const std::u16string token = ReadInterfaceToken();
         type = Read<u32_le>();
     }
 
@@ -511,7 +530,7 @@ private:
         LOG_DEBUG(Service_VI, "called. id=0x{:08X} transaction={:X}, flags=0x{:08X}", id,
                   static_cast<u32>(transaction), flags);
 
-        nv_flinger->Lock();
+        const auto guard = nv_flinger->Lock();
         auto& buffer_queue = nv_flinger->FindBufferQueue(id);
 
         switch (transaction) {
@@ -548,10 +567,10 @@ private:
                 // Wait the current thread until a buffer becomes available
                 ctx.SleepClientThread(
                     "IHOSBinderDriver::DequeueBuffer", UINT64_MAX,
-                    [=](std::shared_ptr<Kernel::Thread> thread, Kernel::HLERequestContext& ctx,
-                        Kernel::ThreadWakeupReason reason) {
+                    [=, this](std::shared_ptr<Kernel::Thread> thread,
+                              Kernel::HLERequestContext& ctx, Kernel::ThreadWakeupReason reason) {
                         // Repeat TransactParcel DequeueBuffer when a buffer is available
-                        nv_flinger->Lock();
+                        const auto guard = nv_flinger->Lock();
                         auto& buffer_queue = nv_flinger->FindBufferQueue(id);
                         auto result = buffer_queue.DequeueBuffer(width, height);
                         ASSERT_MSG(result != std::nullopt, "Could not dequeue buffer.");
@@ -596,7 +615,12 @@ private:
             break;
         }
         case TransactionId::CancelBuffer: {
-            LOG_CRITICAL(Service_VI, "(STUBBED) called, transaction=CancelBuffer");
+            IGBPCancelBufferRequestParcel request{ctx.ReadBuffer()};
+
+            buffer_queue.CancelBuffer(request.data.slot, request.data.multi_fence);
+
+            IGBPCancelBufferResponseParcel response{};
+            ctx.WriteBuffer(response.Serialize());
             break;
         }
         case TransactionId::Disconnect: {
@@ -1199,6 +1223,23 @@ private:
         }
     }
 
+    void GetIndirectLayerImageRequiredMemoryInfo(Kernel::HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto width = rp.Pop<u64>();
+        const auto height = rp.Pop<u64>();
+        LOG_DEBUG(Service_VI, "called width={}, height={}", width, height);
+
+        constexpr std::size_t base_size = 0x20000;
+        constexpr std::size_t alignment = 0x1000;
+        const auto texture_size = width * height * 4;
+        const auto out_size = (texture_size + base_size - 1) / base_size * base_size;
+
+        IPC::ResponseBuilder rb{ctx, 6};
+        rb.Push(RESULT_SUCCESS);
+        rb.Push(out_size);
+        rb.Push(alignment);
+    }
+
     static ResultVal<ConvertedScaleMode> ConvertScalingModeImpl(NintendoScaleMode mode) {
         switch (mode) {
         case NintendoScaleMode::None:
@@ -1243,7 +1284,8 @@ IApplicationDisplayService::IApplicationDisplayService(
         {2102, &IApplicationDisplayService::ConvertScalingMode, "ConvertScalingMode"},
         {2450, nullptr, "GetIndirectLayerImageMap"},
         {2451, nullptr, "GetIndirectLayerImageCropMap"},
-        {2460, nullptr, "GetIndirectLayerImageRequiredMemoryInfo"},
+        {2460, &IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo,
+         "GetIndirectLayerImageRequiredMemoryInfo"},
         {5202, &IApplicationDisplayService::GetDisplayVsyncEvent, "GetDisplayVsyncEvent"},
         {5203, nullptr, "GetDisplayVsyncEventForDebug"},
     };

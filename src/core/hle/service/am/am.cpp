@@ -378,7 +378,11 @@ void ISelfController::GetLibraryAppletLaunchableEvent(Kernel::HLERequestContext&
 }
 
 void ISelfController::SetScreenShotPermission(Kernel::HLERequestContext& ctx) {
-    LOG_WARNING(Service_AM, "(STUBBED) called");
+    IPC::RequestParser rp{ctx};
+    const auto permission = rp.PopEnum<ScreenshotPermission>();
+    LOG_DEBUG(Service_AM, "called, permission={}", permission);
+
+    screenshot_permission = permission;
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
@@ -1188,7 +1192,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_)
         {120, nullptr, "ExecuteProgram"},
         {121, nullptr, "ClearUserChannel"},
         {122, nullptr, "UnpopToUserChannel"},
-        {123, nullptr, "GetPreviousProgramIndex"},
+        {123, &IApplicationFunctions::GetPreviousProgramIndex, "GetPreviousProgramIndex"},
         {124, nullptr, "EnableApplicationAllThreadDumpOnCrash"},
         {130, &IApplicationFunctions::GetGpuErrorDetectedSystemEvent, "GetGpuErrorDetectedSystemEvent"},
         {140, &IApplicationFunctions::GetFriendInvitationStorageChannelEvent, "GetFriendInvitationStorageChannelEvent"},
@@ -1197,6 +1201,8 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_)
         {151, nullptr, "TryPopFromNotificationStorageChannel"},
         {160, nullptr, "GetHealthWarningDisappearedSystemEvent"},
         {170, nullptr, "SetHdcpAuthenticationActivated"},
+        {180, nullptr, "GetLaunchRequiredVersion"},
+        {181, nullptr, "UpgradeLaunchRequiredVersion"},
         {500, nullptr, "StartContinuousRecordingFlushForDebug"},
         {1000, nullptr, "CreateMovieMaker"},
         {1001, nullptr, "PrepareForJit"},
@@ -1342,12 +1348,12 @@ void IApplicationFunctions::EnsureSaveData(Kernel::HLERequestContext& ctx) {
 
     LOG_DEBUG(Service_AM, "called, uid={:016X}{:016X}", user_id[1], user_id[0]);
 
-    FileSys::SaveDataDescriptor descriptor{};
-    descriptor.title_id = system.CurrentProcess()->GetTitleID();
-    descriptor.user_id = user_id;
-    descriptor.type = FileSys::SaveDataType::SaveData;
+    FileSys::SaveDataAttribute attribute{};
+    attribute.title_id = system.CurrentProcess()->GetTitleID();
+    attribute.user_id = user_id;
+    attribute.type = FileSys::SaveDataType::SaveData;
     const auto res = system.GetFileSystemController().CreateSaveData(
-        FileSys::SaveDataSpaceId::NandUser, descriptor);
+        FileSys::SaveDataSpaceId::NandUser, attribute);
 
     IPC::ResponseBuilder rb{ctx, 4};
     rb.Push(res.Code());
@@ -1405,9 +1411,20 @@ void IApplicationFunctions::GetDesiredLanguage(Kernel::HLERequestContext& ctx) {
     // Get supported languages from NACP, if possible
     // Default to 0 (all languages supported)
     u32 supported_languages = 0;
-    FileSys::PatchManager pm{system.CurrentProcess()->GetTitleID()};
 
-    const auto res = pm.GetControlMetadata();
+    const auto res = [this] {
+        const auto title_id = system.CurrentProcess()->GetTitleID();
+
+        FileSys::PatchManager pm{title_id};
+        auto res = pm.GetControlMetadata();
+        if (res.first != nullptr) {
+            return res;
+        }
+
+        FileSys::PatchManager pm_update{FileSys::GetUpdateTitleID(title_id)};
+        return pm_update.GetControlMetadata();
+    }();
+
     if (res.first != nullptr) {
         supported_languages = res.first->GetSupportedLanguages();
     }
@@ -1537,6 +1554,14 @@ void IApplicationFunctions::QueryApplicationPlayStatisticsByUid(Kernel::HLEReque
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(RESULT_SUCCESS);
     rb.Push<u32>(0);
+}
+
+void IApplicationFunctions::GetPreviousProgramIndex(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(RESULT_SUCCESS);
+    rb.Push<s32>(previous_program_index);
 }
 
 void IApplicationFunctions::GetGpuErrorDetectedSystemEvent(Kernel::HLERequestContext& ctx) {

@@ -23,12 +23,15 @@
 #include "common/telemetry.h"
 #include "core/core.h"
 #include "core/crypto/key_manager.h"
+#include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs_real.h"
 #include "core/gdbstub/gdbstub.h"
+#include "core/hle/kernel/process.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
 #include "core/settings.h"
 #include "core/telemetry_session.h"
+#include "input_common/main.h"
 #include "video_core/renderer_base.h"
 #include "yuzu_cmd/config.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl2.h"
@@ -36,8 +39,6 @@
 #ifdef HAS_VULKAN
 #include "yuzu_cmd/emu_window/emu_window_sdl2_vk.h"
 #endif
-
-#include "core/file_sys/registered_cache.h"
 
 #ifdef _WIN32
 // windows.h needs to be included before shellapi.h
@@ -82,8 +83,8 @@ static void InitializeLogging() {
 
     Log::AddBackend(std::make_unique<Log::ColorConsoleBackend>());
 
-    const std::string& log_dir = FileUtil::GetUserPath(FileUtil::UserPath::LogDir);
-    FileUtil::CreateFullPath(log_dir);
+    const std::string& log_dir = Common::FS::GetUserPath(Common::FS::UserPath::LogDir);
+    Common::FS::CreateFullPath(log_dir);
     Log::AddBackend(std::make_unique<Log::FileBackend>(log_dir + LOG_FILE));
 #ifdef _WIN32
     Log::AddBackend(std::make_unique<Log::DebuggerBackend>());
@@ -179,15 +180,16 @@ int main(int argc, char** argv) {
     Settings::Apply();
 
     Core::System& system{Core::System::GetInstance()};
+    InputCommon::InputSubsystem input_subsystem;
 
     std::unique_ptr<EmuWindow_SDL2> emu_window;
     switch (Settings::values.renderer_backend.GetValue()) {
     case Settings::RendererBackend::OpenGL:
-        emu_window = std::make_unique<EmuWindow_SDL2_GL>(system, fullscreen);
+        emu_window = std::make_unique<EmuWindow_SDL2_GL>(&input_subsystem, fullscreen);
         break;
     case Settings::RendererBackend::Vulkan:
 #ifdef HAS_VULKAN
-        emu_window = std::make_unique<EmuWindow_SDL2_VK>(system, fullscreen);
+        emu_window = std::make_unique<EmuWindow_SDL2_VK>(&input_subsystem);
         break;
 #else
         LOG_CRITICAL(Frontend, "Vulkan backend has not been compiled!");
@@ -229,21 +231,20 @@ int main(int argc, char** argv) {
         }
     }
 
-    system.TelemetrySession().AddField(Telemetry::FieldType::App, "Frontend", "SDL");
+    system.TelemetrySession().AddField(Common::Telemetry::FieldType::App, "Frontend", "SDL");
 
     // Core is loaded, start the GPU (makes the GPU contexts current to this thread)
     system.GPU().Start();
 
-    system.Renderer().Rasterizer().LoadDiskResources();
+    system.Renderer().Rasterizer().LoadDiskResources(
+        system.CurrentProcess()->GetTitleID(), false,
+        [](VideoCore::LoadCallbackStage, size_t value, size_t total) {});
 
-    std::thread render_thread([&emu_window] { emu_window->Present(); });
     system.Run();
     while (emu_window->IsOpen()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     system.Pause();
-    render_thread.join();
-
     system.Shutdown();
 
     detached_tasks.WaitForAllTasks();

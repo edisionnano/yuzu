@@ -272,12 +272,19 @@ bool IsPrecise(Operation operand) {
     return false;
 }
 
+u32 ShaderVersion(const VKDevice& device) {
+    if (device.InstanceApiVersion() < VK_API_VERSION_1_1) {
+        return 0x00010000;
+    }
+    return 0x00010300;
+}
+
 class SPIRVDecompiler final : public Sirit::Module {
 public:
     explicit SPIRVDecompiler(const VKDevice& device, const ShaderIR& ir, ShaderType stage,
                              const Registry& registry, const Specialization& specialization)
-        : Module(0x00010300), device{device}, ir{ir}, stage{stage}, header{ir.GetHeader()},
-          registry{registry}, specialization{specialization} {
+        : Module(ShaderVersion(device)), device{device}, ir{ir}, stage{stage},
+          header{ir.GetHeader()}, registry{registry}, specialization{specialization} {
         if (stage != ShaderType::Compute) {
             transform_feedback = BuildTransformFeedback(registry.GetGraphicsInfo());
         }
@@ -293,6 +300,7 @@ public:
         AddCapability(spv::Capability::DrawParameters);
         AddCapability(spv::Capability::SubgroupBallotKHR);
         AddCapability(spv::Capability::SubgroupVoteKHR);
+        AddExtension("SPV_KHR_16bit_storage");
         AddExtension("SPV_KHR_shader_ballot");
         AddExtension("SPV_KHR_subgroup_vote");
         AddExtension("SPV_KHR_storage_buffer_storage_class");
@@ -685,13 +693,19 @@ private:
         }
         t_smem_uint = TypePointer(spv::StorageClass::Workgroup, t_uint);
 
-        const u32 smem_size = specialization.shared_memory_size;
+        u32 smem_size = specialization.shared_memory_size * 4;
         if (smem_size == 0) {
             // Avoid declaring an empty array.
             return;
         }
-        const auto element_count = static_cast<u32>(Common::AlignUp(smem_size, 4) / 4);
-        const Id type_array = TypeArray(t_uint, Constant(t_uint, element_count));
+        const u32 limit = device.GetMaxComputeSharedMemorySize();
+        if (smem_size > limit) {
+            LOG_ERROR(Render_Vulkan, "Shared memory size {} is clamped to host's limit {}",
+                      smem_size, limit);
+            smem_size = limit;
+        }
+
+        const Id type_array = TypeArray(t_uint, Constant(t_uint, smem_size / 4));
         const Id type_pointer = TypePointer(spv::StorageClass::Workgroup, type_array);
         Name(type_pointer, "SharedMemory");
 
@@ -700,9 +714,9 @@ private:
     }
 
     void DeclareInternalFlags() {
-        constexpr std::array names = {"zero", "sign", "carry", "overflow"};
+        static constexpr std::array names{"zero", "sign", "carry", "overflow"};
+
         for (std::size_t flag = 0; flag < INTERNAL_FLAGS_COUNT; ++flag) {
-            const auto flag_code = static_cast<InternalFlag>(flag);
             const Id id = OpVariable(t_prv_bool, spv::StorageClass::Private, v_false);
             internal_flags[flag] = AddGlobalVariable(Name(id, names[flag]));
         }
@@ -2798,7 +2812,6 @@ private:
     std::map<GlobalMemoryBase, Id> global_buffers;
     std::map<u32, TexelBuffer> uniform_texels;
     std::map<u32, SampledImage> sampled_images;
-    std::map<u32, TexelBuffer> storage_texels;
     std::map<u32, StorageImage> images;
 
     std::array<Id, Maxwell::NumRenderTargets> frag_colors{};

@@ -38,11 +38,11 @@ PerfStats::~PerfStats() {
     std::ostringstream stream;
     std::copy(perf_history.begin() + IgnoreFrames, perf_history.begin() + current_index,
               std::ostream_iterator<double>(stream, "\n"));
-    const std::string& path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir);
+    const std::string& path = Common::FS::GetUserPath(Common::FS::UserPath::LogDir);
     // %F Date format expanded is "%Y-%m-%d"
     const std::string filename =
         fmt::format("{}/{:%F-%H-%M}_{:016X}.csv", path, *std::localtime(&t), title_id);
-    FileUtil::IOFile file(filename, "w");
+    Common::FS::IOFile file(filename, "w");
     file.WriteString(stream.str());
 }
 
@@ -74,15 +74,16 @@ void PerfStats::EndGameFrame() {
     game_frames += 1;
 }
 
-double PerfStats::GetMeanFrametime() {
+double PerfStats::GetMeanFrametime() const {
     std::lock_guard lock{object_mutex};
 
     if (current_index <= IgnoreFrames) {
         return 0;
     }
+
     const double sum = std::accumulate(perf_history.begin() + IgnoreFrames,
                                        perf_history.begin() + current_index, 0.0);
-    return sum / (current_index - IgnoreFrames);
+    return sum / static_cast<double>(current_index - IgnoreFrames);
 }
 
 PerfStatsResults PerfStats::GetAndResetStats(microseconds current_system_time_us) {
@@ -94,12 +95,13 @@ PerfStatsResults PerfStats::GetAndResetStats(microseconds current_system_time_us
 
     const auto system_us_per_second = (current_system_time_us - reset_point_system_us) / interval;
 
-    PerfStatsResults results{};
-    results.system_fps = static_cast<double>(system_frames) / interval;
-    results.game_fps = static_cast<double>(game_frames) / interval;
-    results.frametime = duration_cast<DoubleSecs>(accumulated_frametime).count() /
-                        static_cast<double>(system_frames);
-    results.emulation_speed = system_us_per_second.count() / 1'000'000.0;
+    const PerfStatsResults results{
+        .system_fps = static_cast<double>(system_frames) / interval,
+        .game_fps = static_cast<double>(game_frames) / interval,
+        .frametime = duration_cast<DoubleSecs>(accumulated_frametime).count() /
+                     static_cast<double>(system_frames),
+        .emulation_speed = system_us_per_second.count() / 1'000'000.0,
+    };
 
     // Reset counters
     reset_point = now;
@@ -111,7 +113,7 @@ PerfStatsResults PerfStats::GetAndResetStats(microseconds current_system_time_us
     return results;
 }
 
-double PerfStats::GetLastFrameTimeScale() {
+double PerfStats::GetLastFrameTimeScale() const {
     std::lock_guard lock{object_mutex};
 
     constexpr double FRAME_LENGTH = 1.0 / 60;

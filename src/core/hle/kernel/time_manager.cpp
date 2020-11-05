@@ -16,14 +16,14 @@ namespace Kernel {
 
 TimeManager::TimeManager(Core::System& system_) : system{system_} {
     time_manager_event_type = Core::Timing::CreateEvent(
-        "Kernel::TimeManagerCallback", [this](u64 thread_handle, [[maybe_unused]] s64 cycles_late) {
-            SchedulerLock lock(system.Kernel());
-            Handle proper_handle = static_cast<Handle>(thread_handle);
+        "Kernel::TimeManagerCallback",
+        [this](std::uintptr_t thread_handle, std::chrono::nanoseconds) {
+            const SchedulerLock lock(system.Kernel());
+            const auto proper_handle = static_cast<Handle>(thread_handle);
             if (cancelled_events[proper_handle]) {
                 return;
             }
-            std::shared_ptr<Thread> thread =
-                this->system.Kernel().RetrieveThreadFromGlobalHandleTable(proper_handle);
+            auto thread = this->system.Kernel().RetrieveThreadFromGlobalHandleTable(proper_handle);
             thread->OnWakeUp();
         });
 }
@@ -34,7 +34,8 @@ void TimeManager::ScheduleTimeEvent(Handle& event_handle, Thread* timetask, s64 
         ASSERT(timetask);
         ASSERT(timetask->GetStatus() != ThreadStatus::Ready);
         ASSERT(timetask->GetStatus() != ThreadStatus::WaitMutex);
-        system.CoreTiming().ScheduleEvent(nanoseconds, time_manager_event_type, event_handle);
+        system.CoreTiming().ScheduleEvent(std::chrono::nanoseconds{nanoseconds},
+                                          time_manager_event_type, event_handle);
     } else {
         event_handle = InvalidHandle;
     }

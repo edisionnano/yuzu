@@ -26,7 +26,7 @@ QString FormatUserEntryText(const QString& username, Common::UUID uuid) {
 }
 
 QString GetImagePath(Common::UUID uuid) {
-    const auto path = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) +
+    const auto path = Common::FS::GetUserPath(Common::FS::UserPath::NANDDir) +
                       "/system/save/8000000000000010/su/avators/" + uuid.FormatSwitch() + ".jpg";
     return QString::fromStdString(path);
 }
@@ -113,6 +113,15 @@ QtProfileSelectionDialog::QtProfileSelectionDialog(QWidget* parent)
 }
 
 QtProfileSelectionDialog::~QtProfileSelectionDialog() = default;
+
+int QtProfileSelectionDialog::exec() {
+    // Skip profile selection when there's only one.
+    if (profile_manager->GetUserCount() == 1) {
+        user_index = 0;
+        return QDialog::Accepted;
+    }
+    return QDialog::exec();
+}
 
 void QtProfileSelectionDialog::accept() {
     QDialog::accept();

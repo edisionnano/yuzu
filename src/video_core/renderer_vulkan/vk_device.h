@@ -24,8 +24,8 @@ const u32 GuestWarpSize = 32;
 /// Handles data specific to a physical device.
 class VKDevice final {
 public:
-    explicit VKDevice(VkInstance instance, vk::PhysicalDevice physical, VkSurfaceKHR surface,
-                      const vk::InstanceDispatch& dld);
+    explicit VKDevice(VkInstance instance, u32 instance_version, vk::PhysicalDevice physical,
+                      VkSurfaceKHR surface, const vk::InstanceDispatch& dld);
     ~VKDevice();
 
     /// Initializes the device. Returns true on success.
@@ -82,8 +82,13 @@ public:
         return present_family;
     }
 
+    /// Returns the current instance Vulkan API version in Vulkan-formatted version numbers.
+    u32 InstanceApiVersion() const {
+        return instance_version;
+    }
+
     /// Returns the current Vulkan API version provided in Vulkan-formatted version numbers.
-    u32 GetApiVersion() const {
+    u32 ApiVersion() const {
         return properties.apiVersion;
     }
 
@@ -120,6 +125,11 @@ public:
     /// Returns the maximum size for push constants.
     VkDeviceSize GetMaxPushConstantsSize() const {
         return properties.limits.maxPushConstantsSize;
+    }
+
+    /// Returns the maximum size for shared memory.
+    u32 GetMaxComputeSharedMemorySize() const {
+        return properties.limits.maxComputeSharedMemorySize;
     }
 
     /// Returns true if ASTC is natively supported.
@@ -197,6 +207,11 @@ public:
         return reported_extensions;
     }
 
+    /// Returns true if the setting for async shader compilation is enabled.
+    bool UseAsynchronousShaders() const {
+        return use_asynchronous_shaders;
+    }
+
     /// Checks if the physical device is suitable.
     static bool IsSuitable(vk::PhysicalDevice physical, VkSurfaceKHR surface);
 
@@ -229,6 +244,7 @@ private:
     vk::Device logical;                     ///< Logical device.
     vk::Queue graphics_queue;               ///< Main graphics queue.
     vk::Queue present_queue;                ///< Main present queue.
+    u32 instance_version{};                 ///< Vulkan onstance version.
     u32 graphics_family{};                  ///< Main graphics queue family index.
     u32 present_family{};                   ///< Main present queue family index.
     VkDriverIdKHR driver_id{};              ///< Driver ID.
@@ -246,6 +262,9 @@ private:
     bool ext_custom_border_color{};            ///< Support for VK_EXT_custom_border_color.
     bool ext_extended_dynamic_state{};         ///< Support for VK_EXT_extended_dynamic_state.
     bool nv_device_diagnostics_config{};       ///< Support for VK_NV_device_diagnostics_config.
+
+    // Asynchronous Graphics Pipeline setting
+    bool use_asynchronous_shaders{}; ///< Setting to use asynchronous shaders/graphics pipeline
 
     // Telemetry parameters
     std::string vendor_name;                      ///< Device's driver name.

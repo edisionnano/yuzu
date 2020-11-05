@@ -35,7 +35,7 @@ constexpr ResultCode ERR_INVALID_BUFFER_SIZE{ErrorModule::Account, 30};
 constexpr ResultCode ERR_FAILED_SAVE_DATA{ErrorModule::Account, 100};
 
 static std::string GetImagePath(Common::UUID uuid) {
-    return FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) +
+    return Common::FS::GetUserPath(Common::FS::UserPath::NANDDir) +
            "/system/save/8000000000000010/su/avators/" + uuid.FormatSwitch() + ".jpg";
 }
 
@@ -286,9 +286,7 @@ protected:
         ProfileBase profile_base{};
         ProfileData data{};
         if (profile_manager.GetProfileBaseAndData(user_id, profile_base, data)) {
-            std::array<u8, sizeof(ProfileData)> raw_data;
-            std::memcpy(raw_data.data(), &data, sizeof(ProfileData));
-            ctx.WriteBuffer(raw_data);
+            ctx.WriteBuffer(data);
             IPC::ResponseBuilder rb{ctx, 16};
             rb.Push(RESULT_SUCCESS);
             rb.PushRaw(profile_base);
@@ -320,7 +318,7 @@ protected:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
 
-        const FileUtil::IOFile image(GetImagePath(user_id), "rb");
+        const Common::FS::IOFile image(GetImagePath(user_id), "rb");
         if (!image.IsOpen()) {
             LOG_WARNING(Service_ACC,
                         "Failed to load user provided image! Falling back to built-in backup...");
@@ -333,7 +331,7 @@ protected:
         std::vector<u8> buffer(size);
         image.ReadBytes(buffer.data(), buffer.size());
 
-        ctx.WriteBuffer(buffer.data(), buffer.size());
+        ctx.WriteBuffer(buffer);
         rb.Push<u32>(size);
     }
 
@@ -342,7 +340,7 @@ protected:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
 
-        const FileUtil::IOFile image(GetImagePath(user_id), "rb");
+        const Common::FS::IOFile image(GetImagePath(user_id), "rb");
 
         if (!image.IsOpen()) {
             LOG_WARNING(Service_ACC,
@@ -407,7 +405,7 @@ protected:
         ProfileData data;
         std::memcpy(&data, user_data.data(), sizeof(ProfileData));
 
-        FileUtil::IOFile image(GetImagePath(user_id), "wb");
+        Common::FS::IOFile image(GetImagePath(user_id), "wb");
 
         if (!image.IsOpen() || !image.Resize(image_data.size()) ||
             image.WriteBytes(image_data.data(), image_data.size()) != image_data.size() ||
@@ -498,7 +496,7 @@ public:
             {3, nullptr, "LoadIdTokenCache"},
             {130, nullptr, "GetNintendoAccountUserResourceCacheForApplication"},
             {150, nullptr, "CreateAuthorizationRequest"},
-            {160, nullptr, "StoreOpenContext"},
+            {160, &IManagerForApplication::StoreOpenContext, "StoreOpenContext"},
             {170, nullptr, "LoadNetworkServiceLicenseKindAsync"},
         };
         // clang-format on
@@ -520,6 +518,12 @@ private:
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(RESULT_SUCCESS);
         rb.PushRaw<u64>(user_id.GetNintendoID());
+    }
+
+    void StoreOpenContext(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(RESULT_SUCCESS);
     }
 
     Common::UUID user_id;
@@ -774,6 +778,17 @@ void Module::Interface::ListQualifiedUsers(Kernel::HLERequestContext& ctx) {
     ctx.WriteBuffer(profile_manager->GetAllUsers());
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
+}
+
+void Module::Interface::LoadOpenContext(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_ACC, "(STUBBED) called");
+
+    // This is similar to GetBaasAccountManagerForApplication
+    // This command is used concurrently with ListOpenContextStoredUsers
+    // TODO: Find the differences between this and GetBaasAccountManagerForApplication
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(RESULT_SUCCESS);
+    rb.PushIpcInterface<IManagerForApplication>(profile_manager->GetLastOpenedUser());
 }
 
 void Module::Interface::ListOpenContextStoredUsers(Kernel::HLERequestContext& ctx) {

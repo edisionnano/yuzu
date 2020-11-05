@@ -40,9 +40,11 @@
 #include "core/hle/service/lm/manager.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/sm/sm.h"
+#include "core/hle/service/time/time_manager.h"
 #include "core/loader/loader.h"
 #include "core/memory.h"
 #include "core/memory/cheat_engine.h"
+#include "core/network/network.h"
 #include "core/perf_stats.h"
 #include "core/reporter.h"
 #include "core/settings.h"
@@ -112,7 +114,7 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
         return FileSys::ConcatenatedVfsFile::MakeConcatenatedFile(concat, dir->GetName());
     }
 
-    if (FileUtil::IsDirectory(path))
+    if (Common::FS::IsDirectory(path))
         return vfs->OpenFile(path + "/" + "main", FileSys::Mode::Read);
 
     return vfs->OpenFile(path, FileSys::Mode::Read);
@@ -120,7 +122,7 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
 struct System::Impl {
     explicit Impl(System& system)
         : kernel{system}, fs_controller{system}, memory{system},
-          cpu_manager{system}, reporter{system}, applet_manager{system} {}
+          cpu_manager{system}, reporter{system}, applet_manager{system}, time_manager{system} {}
 
     ResultStatus Run() {
         status = ResultStatus::Success;
@@ -145,7 +147,7 @@ struct System::Impl {
     ResultStatus Init(System& system, Frontend::EmuWindow& emu_window) {
         LOG_DEBUG(HW_Memory, "initialized OK");
 
-        device_memory = std::make_unique<Core::DeviceMemory>(system);
+        device_memory = std::make_unique<Core::DeviceMemory>();
 
         is_multicore = Settings::values.use_multi_core.GetValue();
         is_async_gpu = is_multicore || Settings::values.use_asynchronous_gpu_emulation.GetValue();
@@ -177,17 +179,21 @@ struct System::Impl {
         arp_manager.ResetAll();
 
         telemetry_session = std::make_unique<Core::TelemetrySession>();
-        service_manager = std::make_shared<Service::SM::ServiceManager>();
+
+        gpu_core = VideoCore::CreateGPU(emu_window, system);
+        if (!gpu_core) {
+            return ResultStatus::ErrorVideoCore;
+        }
+
+        service_manager = std::make_shared<Service::SM::ServiceManager>(kernel);
 
         Service::Init(service_manager, system);
         GDBStub::DeferStart();
 
         interrupt_manager = std::make_unique<Core::Hardware::InterruptManager>(system);
-        gpu_core = VideoCore::CreateGPU(emu_window, system);
-        if (!gpu_core) {
-            return ResultStatus::ErrorVideoCore;
-        }
-        gpu_core->Renderer().Rasterizer().SetupDirtyFlags();
+
+        // Initialize time manager, which must happen after kernel is created
+        time_manager.Initialize();
 
         is_powered_on = true;
         exit_lock = false;
@@ -221,7 +227,7 @@ struct System::Impl {
         telemetry_session->AddInitialInfo(*app_loader);
         auto main_process =
             Kernel::Process::Create(system, "main", Kernel::Process::ProcessType::Userland);
-        const auto [load_result, load_parameters] = app_loader->Load(*main_process);
+        const auto [load_result, load_parameters] = app_loader->Load(*main_process, system);
         if (load_result != Loader::ResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", static_cast<int>(load_result));
             Shutdown();
@@ -268,14 +274,14 @@ struct System::Impl {
         // Log last frame performance stats if game was loded
         if (perf_stats) {
             const auto perf_results = GetAndResetPerfStats();
-            telemetry_session->AddField(Telemetry::FieldType::Performance,
-                                        "Shutdown_EmulationSpeed",
+            constexpr auto performance = Common::Telemetry::FieldType::Performance;
+
+            telemetry_session->AddField(performance, "Shutdown_EmulationSpeed",
                                         perf_results.emulation_speed * 100.0);
-            telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_Framerate",
-                                        perf_results.game_fps);
-            telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_Frametime",
+            telemetry_session->AddField(performance, "Shutdown_Framerate", perf_results.game_fps);
+            telemetry_session->AddField(performance, "Shutdown_Frametime",
                                         perf_results.frametime * 1000.0);
-            telemetry_session->AddField(Telemetry::FieldType::Performance, "Mean_Frametime_MS",
+            telemetry_session->AddField(performance, "Mean_Frametime_MS",
                                         perf_stats->GetMeanFrametime());
         }
 
@@ -387,12 +393,16 @@ struct System::Impl {
     /// Service State
     Service::Glue::ARPManager arp_manager;
     Service::LM::Manager lm_manager{reporter};
+    Service::Time::TimeManager time_manager;
 
     /// Service manager
     std::shared_ptr<Service::SM::ServiceManager> service_manager;
 
     /// Telemetry session for this emulation session
     std::unique_ptr<Core::TelemetrySession> telemetry_session;
+
+    /// Network instance
+    Network::NetworkInstance network_instance;
 
     ResultStatus status = ResultStatus::Success;
     std::string status_details = "";
@@ -626,11 +636,11 @@ Loader::AppLoader& System::GetAppLoader() const {
     return *impl->app_loader;
 }
 
-void System::SetFilesystem(std::shared_ptr<FileSys::VfsFilesystem> vfs) {
+void System::SetFilesystem(FileSys::VirtualFilesystem vfs) {
     impl->virtual_filesystem = std::move(vfs);
 }
 
-std::shared_ptr<FileSys::VfsFilesystem> System::GetFilesystem() const {
+FileSys::VirtualFilesystem System::GetFilesystem() const {
     return impl->virtual_filesystem;
 }
 
@@ -712,6 +722,14 @@ Service::LM::Manager& System::GetLogManager() {
 
 const Service::LM::Manager& System::GetLogManager() const {
     return impl->lm_manager;
+}
+
+Service::Time::TimeManager& System::GetTimeManager() {
+    return impl->time_manager;
+}
+
+const Service::Time::TimeManager& System::GetTimeManager() const {
+    return impl->time_manager;
 }
 
 void System::SetExitLock(bool locked) {

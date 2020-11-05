@@ -1,8 +1,28 @@
+add_subdirectory(host_shaders)
+
 add_library(video_core STATIC
     buffer_cache/buffer_block.h
     buffer_cache/buffer_cache.h
     buffer_cache/map_interval.cpp
     buffer_cache/map_interval.h
+    cdma_pusher.cpp
+    cdma_pusher.h
+    command_classes/codecs/codec.cpp
+    command_classes/codecs/codec.h
+    command_classes/codecs/h264.cpp
+    command_classes/codecs/h264.h
+    command_classes/codecs/vp9.cpp
+    command_classes/codecs/vp9.h
+    command_classes/codecs/vp9_types.h
+    command_classes/host1x.cpp
+    command_classes/host1x.h
+    command_classes/nvdec.cpp
+    command_classes/nvdec.h
+    command_classes/nvdec_common.h
+    command_classes/sync_manager.cpp
+    command_classes/sync_manager.h
+    command_classes/vic.cpp
+    command_classes/vic.h
     compatible_formats.cpp
     compatible_formats.h
     dirty_flags.cpp
@@ -98,6 +118,8 @@ add_library(video_core STATIC
     sampler_cache.cpp
     sampler_cache.h
     shader_cache.h
+    shader_notify.cpp
+    shader_notify.h
     shader/decode/arithmetic.cpp
     shader/decode/arithmetic_immediate.cpp
     shader/decode/bfe.cpp
@@ -128,6 +150,8 @@ add_library(video_core STATIC
     shader/decode/other.cpp
     shader/ast.cpp
     shader/ast.h
+    shader/async_shaders.cpp
+    shader/async_shaders.h
     shader/compiler_settings.cpp
     shader/compiler_settings.h
     shader/control_flow.cpp
@@ -184,6 +208,8 @@ if (ENABLE_VULKAN)
         renderer_vulkan/vk_blit_screen.h
         renderer_vulkan/vk_buffer_cache.cpp
         renderer_vulkan/vk_buffer_cache.h
+        renderer_vulkan/vk_command_pool.cpp
+        renderer_vulkan/vk_command_pool.h
         renderer_vulkan/vk_compute_pass.cpp
         renderer_vulkan/vk_compute_pass.h
         renderer_vulkan/vk_compute_pipeline.cpp
@@ -198,6 +224,8 @@ if (ENABLE_VULKAN)
         renderer_vulkan/vk_graphics_pipeline.h
         renderer_vulkan/vk_image.cpp
         renderer_vulkan/vk_image.h
+        renderer_vulkan/vk_master_semaphore.cpp
+        renderer_vulkan/vk_master_semaphore.h
         renderer_vulkan/vk_memory_manager.cpp
         renderer_vulkan/vk_memory_manager.h
         renderer_vulkan/vk_pipeline_cache.cpp
@@ -208,8 +236,8 @@ if (ENABLE_VULKAN)
         renderer_vulkan/vk_rasterizer.h
         renderer_vulkan/vk_renderpass_cache.cpp
         renderer_vulkan/vk_renderpass_cache.h
-        renderer_vulkan/vk_resource_manager.cpp
-        renderer_vulkan/vk_resource_manager.h
+        renderer_vulkan/vk_resource_pool.cpp
+        renderer_vulkan/vk_resource_pool.h
         renderer_vulkan/vk_sampler_cache.cpp
         renderer_vulkan/vk_sampler_cache.h
         renderer_vulkan/vk_scheduler.cpp
@@ -240,6 +268,17 @@ create_target_directory_groups(video_core)
 target_link_libraries(video_core PUBLIC common core)
 target_link_libraries(video_core PRIVATE glad xbyak)
 
+if (MSVC)
+    target_include_directories(video_core PRIVATE ${FFMPEG_INCLUDE_DIR})
+    target_link_libraries(video_core PUBLIC ${FFMPEG_LIBRARY_DIR}/swscale.lib ${FFMPEG_LIBRARY_DIR}/avcodec.lib ${FFMPEG_LIBRARY_DIR}/avutil.lib)
+else()
+    target_include_directories(video_core PRIVATE ${FFMPEG_INCLUDE_DIR})
+    target_link_libraries(video_core PRIVATE ${FFMPEG_LIBRARIES})
+endif()
+
+add_dependencies(video_core host_shaders)
+target_include_directories(video_core PRIVATE ${HOST_SHADERS_INCLUDE})
+
 if (ENABLE_VULKAN)
     target_include_directories(video_core PRIVATE sirit ../../externals/Vulkan-Headers/include)
     target_compile_definitions(video_core PRIVATE HAS_VULKAN)
@@ -260,5 +299,17 @@ endif()
 if (MSVC)
     target_compile_options(video_core PRIVATE /we4267)
 else()
-    target_compile_options(video_core PRIVATE -Werror=conversion -Wno-error=sign-conversion)
+    target_compile_options(video_core PRIVATE
+        -Werror=conversion
+        -Wno-error=sign-conversion
+        -Werror=pessimizing-move
+        -Werror=redundant-move
+        -Werror=switch
+        -Werror=type-limits
+        -Werror=unused-variable
+
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=class-memaccess>
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=unused-but-set-parameter>
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=unused-but-set-variable>
+    )
 endif()

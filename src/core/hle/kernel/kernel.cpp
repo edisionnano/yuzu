@@ -7,7 +7,6 @@
 #include <bitset>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -50,7 +49,8 @@ namespace Kernel {
 
 struct KernelCore::Impl {
     explicit Impl(Core::System& system, KernelCore& kernel)
-        : global_scheduler{kernel}, synchronization{system}, time_manager{system}, system{system} {}
+        : global_scheduler{kernel}, synchronization{system}, time_manager{system},
+          global_handle_table{kernel}, system{system} {}
 
     void SetMulticore(bool is_multicore) {
         this->is_multicore = is_multicore;
@@ -86,8 +86,6 @@ struct KernelCore::Impl {
         }
         cores.clear();
 
-        registered_core_threads.reset();
-
         process_list.clear();
         current_process = nullptr;
 
@@ -106,7 +104,11 @@ struct KernelCore::Impl {
         cores.clear();
 
         exclusive_monitor.reset();
-        host_thread_ids.clear();
+
+        num_host_threads = 0;
+        std::fill(register_host_thread_keys.begin(), register_host_thread_keys.end(),
+                  std::thread::id{});
+        std::fill(register_host_thread_values.begin(), register_host_thread_values.end(), 0);
     }
 
     void InitializePhysicalCores() {
@@ -144,82 +146,90 @@ struct KernelCore::Impl {
 
     void InitializePreemption(KernelCore& kernel) {
         preemption_event = Core::Timing::CreateEvent(
-            "PreemptionCallback", [this, &kernel](u64 userdata, s64 cycles_late) {
+            "PreemptionCallback", [this, &kernel](std::uintptr_t, std::chrono::nanoseconds) {
                 {
                     SchedulerLock lock(kernel);
                     global_scheduler.PreemptThreads();
                 }
-                s64 time_interval = Core::Timing::msToCycles(std::chrono::milliseconds(10));
+                const auto time_interval = std::chrono::nanoseconds{
+                    Core::Timing::msToCycles(std::chrono::milliseconds(10))};
                 system.CoreTiming().ScheduleEvent(time_interval, preemption_event);
             });
 
-        s64 time_interval = Core::Timing::msToCycles(std::chrono::milliseconds(10));
+        const auto time_interval =
+            std::chrono::nanoseconds{Core::Timing::msToCycles(std::chrono::milliseconds(10))};
         system.CoreTiming().ScheduleEvent(time_interval, preemption_event);
     }
 
     void InitializeSuspendThreads() {
         for (std::size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {
             std::string name = "Suspend Thread Id:" + std::to_string(i);
-            std::function<void(void*)> init_func =
-                system.GetCpuManager().GetSuspendThreadStartFunc();
+            std::function<void(void*)> init_func = Core::CpuManager::GetSuspendThreadStartFunc();
             void* init_func_parameter = system.GetCpuManager().GetStartFuncParamater();
-            ThreadType type =
+            const auto type =
                 static_cast<ThreadType>(THREADTYPE_KERNEL | THREADTYPE_HLE | THREADTYPE_SUSPEND);
-            auto thread_res = Thread::Create(system, type, name, 0, 0, 0, static_cast<u32>(i), 0,
-                                             nullptr, std::move(init_func), init_func_parameter);
+            auto thread_res =
+                Thread::Create(system, type, std::move(name), 0, 0, 0, static_cast<u32>(i), 0,
+                               nullptr, std::move(init_func), init_func_parameter);
+
             suspend_threads[i] = std::move(thread_res).Unwrap();
         }
     }
 
     void MakeCurrentProcess(Process* process) {
         current_process = process;
-
         if (process == nullptr) {
             return;
         }
-
-        u32 core_id = GetCurrentHostThreadID();
+        const u32 core_id = GetCurrentHostThreadID();
         if (core_id < Core::Hardware::NUM_CPU_CORES) {
             system.Memory().SetCurrentPageTable(*process, core_id);
         }
     }
 
     void RegisterCoreThread(std::size_t core_id) {
-        std::unique_lock lock{register_thread_mutex};
-        if (!is_multicore) {
-            single_core_thread_id = std::this_thread::get_id();
-        }
         const std::thread::id this_id = std::this_thread::get_id();
-        const auto it = host_thread_ids.find(this_id);
+        if (!is_multicore) {
+            single_core_thread_id = this_id;
+        }
+        const auto end =
+            register_host_thread_keys.begin() + static_cast<ptrdiff_t>(num_host_threads);
+        const auto it = std::find(register_host_thread_keys.begin(), end, this_id);
         ASSERT(core_id < Core::Hardware::NUM_CPU_CORES);
-        ASSERT(it == host_thread_ids.end());
-        ASSERT(!registered_core_threads[core_id]);
-        host_thread_ids[this_id] = static_cast<u32>(core_id);
-        registered_core_threads.set(core_id);
+        ASSERT(it == end);
+        InsertHostThread(static_cast<u32>(core_id));
     }
 
     void RegisterHostThread() {
-        std::unique_lock lock{register_thread_mutex};
         const std::thread::id this_id = std::this_thread::get_id();
-        const auto it = host_thread_ids.find(this_id);
-        if (it != host_thread_ids.end()) {
-            return;
+        const auto end =
+            register_host_thread_keys.begin() + static_cast<ptrdiff_t>(num_host_threads);
+        const auto it = std::find(register_host_thread_keys.begin(), end, this_id);
+        if (it == end) {
+            InsertHostThread(registered_thread_ids++);
         }
-        host_thread_ids[this_id] = registered_thread_ids++;
     }
 
-    u32 GetCurrentHostThreadID() const {
+    void InsertHostThread(u32 value) {
+        const size_t index = num_host_threads++;
+        ASSERT_MSG(index < NUM_REGISTRABLE_HOST_THREADS, "Too many host threads");
+        register_host_thread_values[index] = value;
+        register_host_thread_keys[index] = std::this_thread::get_id();
+    }
+
+    [[nodiscard]] u32 GetCurrentHostThreadID() const {
         const std::thread::id this_id = std::this_thread::get_id();
-        if (!is_multicore) {
-            if (single_core_thread_id == this_id) {
-                return static_cast<u32>(system.GetCpuManager().CurrentCore());
-            }
+        if (!is_multicore && single_core_thread_id == this_id) {
+            return static_cast<u32>(system.GetCpuManager().CurrentCore());
         }
-        const auto it = host_thread_ids.find(this_id);
-        if (it == host_thread_ids.end()) {
+        const auto end =
+            register_host_thread_keys.begin() + static_cast<ptrdiff_t>(num_host_threads);
+        const auto it = std::find(register_host_thread_keys.begin(), end, this_id);
+        if (it == end) {
             return Core::INVALID_HOST_THREAD_ID;
         }
-        return it->second;
+        return register_host_thread_values[static_cast<size_t>(
+            std::distance(register_host_thread_keys.begin(), it))];
     }
 
     Core::EmuThreadHandle GetCurrentEmuThreadID() const {
@@ -307,7 +317,7 @@ struct KernelCore::Impl {
 
     // This is the kernel's handle table or supervisor handle table which
     // stores all the objects in place.
-    Kernel::HandleTable global_handle_table;
+    HandleTable global_handle_table;
 
     /// Map of named ports managed by the kernel, which can be retrieved using
     /// the ConnectToPort SVC.
@@ -317,10 +327,14 @@ struct KernelCore::Impl {
     std::vector<Kernel::PhysicalCore> cores;
 
     // 0-3 IDs represent core threads, >3 represent others
-    std::unordered_map<std::thread::id, u32> host_thread_ids;
-    u32 registered_thread_ids{Core::Hardware::NUM_CPU_CORES};
-    std::bitset<Core::Hardware::NUM_CPU_CORES> registered_core_threads;
-    std::mutex register_thread_mutex;
+    std::atomic<u32> registered_thread_ids{Core::Hardware::NUM_CPU_CORES};
+
+    // Number of host threads is a relatively high number to avoid overflowing
+    static constexpr size_t NUM_REGISTRABLE_HOST_THREADS = 64;
+    std::atomic<size_t> num_host_threads{0};
+    std::array<std::atomic<std::thread::id>, NUM_REGISTRABLE_HOST_THREADS>
+        register_host_thread_keys{};
+    std::array<std::atomic<u32>, NUM_REGISTRABLE_HOST_THREADS> register_host_thread_values{};
 
     // Kernel memory management
     std::unique_ptr<Memory::MemoryManager> memory_manager;
